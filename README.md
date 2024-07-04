@@ -9,7 +9,7 @@ Pyion's documentation can be found at https://pyion.readthedocs.io/en/latest/.
 
 ION's official repository is now available at https://github.com/nasa-jpl/ION-DTN.
 
-ION's official repository is available at https://nasa-jpl.github.io/ION-DTN/.
+ION's official documentation is available at https://nasa-jpl.github.io/ION-DTN/.
 
 
 License Terms
