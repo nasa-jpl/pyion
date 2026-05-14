@@ -5,6 +5,12 @@ This repository contains the source code of **pyion**, a Python extension for th
 Pyion follows the release schedule of ION and places the relevant codebase in separate branches
 (e.g., for ION-3.7.0, checkout branch v3.7.0).
 
+.. Warning:: **Python 3.13+ Compatibility**
+   Python 3.13 introduced an experimental free-threading mode (removal of the GIL). 
+   **PYION is currently NOT fully thread-safe** in this mode. If you are using a free-threaded 
+   build of Python, you MUST enable the GIL by setting the environment variable 
+   `PYTHON_GIL=1` to avoid race conditions and potential crashes.
+
 Pyion's documentation can be found at https://pyion.readthedocs.io/en/latest/.
 
 ION's official repository is now available at https://github.com/nasa-jpl/ION-DTN.

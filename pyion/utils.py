@@ -17,6 +17,11 @@ from functools import wraps
 import os
 from pathlib import Path
 import time
+import threading
+
+# Global lock to ensure that only one thread changes the directory at a time
+# This is necessary because os.chdir() affects the entire process.
+ion_dir_lock = threading.Lock()
 
 import pyion
 
@@ -82,27 +87,28 @@ def in_ion_folder(func):
     """
     @wraps(func)
     def wrapper(self, *args, **kwargs):
-        # Get the node's directory
-        node_dir = getattr(self, 'node_dir')
+        with ion_dir_lock:
+            # Get the node's directory
+            node_dir = getattr(self, 'node_dir')
 
-        # If no directory specified, just run. This is always the case
-        # unless you run multiple ION nodes in a single machine.
-        if node_dir is None: return func(self, *args, **kwargs)
-    
-        # Store current working directory
-        cur_dir = os.getcwd()
+            # If no directory specified, just run. This is always the case
+            # unless you run multiple ION nodes in a single machine.
+            if node_dir is None: return func(self, *args, **kwargs)
+        
+            # Store current working directory
+            cur_dir = os.getcwd()
 
-        # Go to the node's directory
-        os.chdir(str(node_dir.absolute()))
+            # Go to the node's directory
+            os.chdir(str(node_dir.absolute()))
 
-        # Execture function
-        try:
-            ret = func(self, *args, **kwargs)
-        finally:
-            # Go back to the previous working directory
-            os.chdir(cur_dir)
+            # Execture function
+            try:
+                ret = func(self, *args, **kwargs)
+            finally:
+                # Go back to the previous working directory
+                os.chdir(cur_dir)
 
-        return ret
+            return ret
     return wrapper
 
 def _chk_attached(func):
