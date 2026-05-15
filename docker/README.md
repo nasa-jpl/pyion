@@ -54,11 +54,34 @@ Then:
 docker compose -f tests/bp_tests/test_network.yaml up
 ```
 
+## Free-threaded image
+
+`Dockerfile.freethreaded` builds a second image that bundles ION-DTN with a
+free-threaded (GIL-disabled, PEP 703) CPython 3.13 compiled from source. It is
+used to validate pyion under free-threading and to run ThreadSanitizer (its
+Ubuntu 24.04 toolchain ships a libtsan that works with modern kernel ASLR).
+
+```bash
+docker build -t pyion_ft:4.1.4a2 -f docker/Dockerfile.freethreaded docker/
+```
+
+Run the concurrency suite under free-threading with `PYTHON_GIL=0`:
+
+```bash
+docker run --rm --shm-size=256m -e PYTHON_GIL=0 \
+    -v "$PWD":/home/ion-interface pyion_ft:4.1.4a2 bash -c '
+        cd /home/ion-interface && python3 setup.py install &&
+        bash tests/regression/concurrency/run_c_concurrency_test.sh'
+```
+
+ThreadSanitizer additionally needs reduced mmap randomization on the host
+(`sudo sysctl -w vm.mmap_rnd_bits=28`); see the `free-threaded` job in
+`.github/workflows/regression.yml`.
+
 ## Notes
 
-- The image is based on Ubuntu 22.04 (Python 3.10) and is suitable for
-  testing pyion under the GIL. Validating free-threading (`python3.13t`)
-  needs a base image with a free-threaded Python build; that is a later
-  step in the C-layer thread-safety work.
+- The default image is based on Ubuntu 22.04 (Python 3.10) and tests pyion
+  under the GIL; the free-threaded image above covers GIL-disabled CPython.
 - `valgrind` and `gdb` are installed, and `build-essential` provides the
-  AddressSanitizer runtime, for the C-layer concurrency stress tests.
+  AddressSanitizer/ThreadSanitizer runtimes, for the C-layer concurrency
+  stress tests.

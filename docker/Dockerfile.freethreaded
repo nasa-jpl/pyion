@@ -1,0 +1,83 @@
+# ======================================================================
+# Free-threaded test image for pyion.
+#
+# Bundles ION-DTN and a free-threaded (GIL-disabled, PEP 703) CPython 3.13
+# built from source, for validating pyion under free-threading and for
+# running ThreadSanitizer (the Ubuntu 24.04 toolchain ships a libtsan that
+# works with modern kernel ASLR, unlike the GIL image's older one).
+#
+# The image is self-contained: ION-DTN and CPython are downloaded and built
+# during the image build. pyion itself is built at container start.
+#
+# Build
+# -----
+#   docker build -t pyion_ft:4.1.4a2 -f docker/Dockerfile.freethreaded docker/
+# ======================================================================
+
+FROM ubuntu:24.04
+
+ARG ION_VERSION=4.1.4a2
+ARG ION_TAG=ion-open-source-4.1.4-a.2
+ARG ION_REPO=https://github.com/nasa-jpl/ION-DTN
+ARG CPYTHON_BRANCH=3.13
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- Build toolchain -------------------------------------------------------
+# build-essential (gcc 13) provides the AddressSanitizer/ThreadSanitizer
+# runtimes. The lib*-dev packages are CPython build dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        autoconf \
+        automake \
+        autotools-dev \
+        libtool \
+        git \
+        wget \
+        ca-certificates \
+        pkg-config \
+        zlib1g-dev \
+        libffi-dev \
+        libssl-dev \
+        valgrind \
+        gdb \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Free-threaded CPython 3.13 -------------------------------------------
+# Built with --disable-gil (PEP 703). The interpreter is python3.13t; it is
+# also exposed as python3 on PATH.
+RUN git clone --depth 1 --branch ${CPYTHON_BRANCH} \
+        https://github.com/python/cpython /tmp/cpython \
+    && cd /tmp/cpython \
+    && ./configure --disable-gil --enable-shared \
+                   --prefix=/opt/pyft --with-ensurepip=install \
+    && make -j"$(nproc)" \
+    && make install \
+    && cd / \
+    && rm -rf /tmp/cpython
+ENV PATH=/opt/pyft/bin:$PATH
+# Register the CPython shared-library directory with ldconfig rather than via
+# LD_LIBRARY_PATH: pyion's setup.py treats LD_LIBRARY_PATH as a single path,
+# so a multi-entry value would break ION path detection.
+RUN echo /opt/pyft/lib > /etc/ld.so.conf.d/pyft.conf \
+    && ldconfig \
+    && ln -sf /opt/pyft/bin/python3.13t /opt/pyft/bin/python3 \
+    && python3 -m pip install --no-cache-dir setuptools wheel
+
+# --- ION-DTN ---------------------------------------------------------------
+RUN wget -q -O /tmp/ion.tar.gz "${ION_REPO}/archive/refs/tags/${ION_TAG}.tar.gz" \
+    && mkdir -p /home/ion-open-source-${ION_VERSION} \
+    && tar -xzf /tmp/ion.tar.gz -C /home/ion-open-source-${ION_VERSION} --strip-components=1 \
+    && rm /tmp/ion.tar.gz \
+    && cd /home/ion-open-source-${ION_VERSION} \
+    && ( [ -x ./configure ] || autoreconf -fi ) \
+    && ./configure \
+    && make \
+    && make install \
+    && ldconfig
+
+# --- pyion build configuration ---------------------------------------------
+ENV ION_HOME=/home/ion-open-source-${ION_VERSION}
+ENV PYION_BP_VERSION=BPv7
+
+WORKDIR /home/ion-interface
+CMD ["tail", "-f", "/dev/null"]

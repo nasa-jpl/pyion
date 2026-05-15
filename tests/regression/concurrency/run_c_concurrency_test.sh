@@ -63,6 +63,7 @@ if [ -n "${PYION_ASAN_PRELOAD:-}" ]; then
     LD_PRELOAD="$PYION_ASAN_PRELOAD" \
     ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}" \
     UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1}" \
+    TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=0 suppressions=$HERE/tsan.suppressions}" \
         timeout "$TEST_TIMEOUT" python3 test_c_concurrency.py
 else
     timeout "$TEST_TIMEOUT" python3 test_c_concurrency.py

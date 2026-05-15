@@ -1,9 +1,10 @@
 # Regression tests for pyion.
 #
 # Runs on GitHub-hosted (cloud) runners -- no self-hosted runner required.
-# The job builds the docker test image (ION-DTN + toolchain) and runs the
-# C-layer concurrency regression suite against a real ION node, both normally
-# and under AddressSanitizer/UBSan.
+# Two jobs build a docker test image (ION-DTN + toolchain) and run the
+# C-layer concurrency regression suite against a real ION node:
+#   * c-layer-concurrency: stock CPython, normally and under ASan/UBSan.
+#   * free-threaded:       GIL-disabled CPython 3.13, normally and under TSan.
 name: Regression tests
 
 on:
@@ -70,9 +71,69 @@ jobs:
               bash tests/regression/concurrency/run_c_concurrency_test.sh
             '
 
+  free-threaded:
+    name: Free-threaded + ThreadSanitizer (real ION)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Builds docker/Dockerfile.freethreaded: ION-DTN plus a GIL-disabled
+      # CPython 3.13 compiled from source. A separate cache scope keeps this
+      # from colliding with the stock-CPython image cache.
+      - name: Build free-threaded test image
+        uses: docker/build-push-action@v7
+        with:
+          context: docker
+          file: docker/Dockerfile.freethreaded
+          tags: pyion_ft:4.1.4a2
+          load: true
+          cache-from: type=gha,scope=ft
+          cache-to: type=gha,mode=max,scope=ft
+
+      # PYTHON_GIL=0 keeps the GIL disabled even though the extensions do not
+      # yet declare free-threading support, so the C code runs truly GIL-free.
+      - name: Concurrency regression test (free-threaded)
+        run: |
+          docker run --rm --shm-size=256m \
+            -e PYTHONUNBUFFERED=1 -e PYTHON_GIL=0 \
+            -v "$GITHUB_WORKSPACE":/home/ion-interface \
+            pyion_ft:4.1.4a2 bash -c '
+              set -e
+              cd /home/ion-interface
+              rm -rf build
+              python3 setup.py install >/tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+              bash tests/regression/concurrency/run_c_concurrency_test.sh
+            '
+
+      # ThreadSanitizer needs reduced mmap randomization entropy; the default
+      # on modern kernels is too high for libtsan. This is set on the runner
+      # host, which the (unprivileged) container then inherits.
+      - name: Lower ASLR entropy for ThreadSanitizer
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Concurrency regression test (free-threaded + ThreadSanitizer)
+        run: |
+          docker run --rm --shm-size=256m \
+            -e PYTHONUNBUFFERED=1 -e PYTHON_GIL=0 \
+            -v "$GITHUB_WORKSPACE":/home/ion-interface \
+            pyion_ft:4.1.4a2 bash -c '
+              set -e
+              cd /home/ion-interface
+              rm -rf build
+              PYION_SANITIZE=thread python3 setup.py install \
+                >/tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+              export PYION_ASAN_PRELOAD=$(gcc -print-file-name=libtsan.so)
+              bash tests/regression/concurrency/run_c_concurrency_test.sh
+            '
+
   # ---------------------------------------------------------------------------
   # The Python-layer regression test (PR #2's
   # tests/regression/concurrency/test_concurrency.py) is intentionally not run
   # here yet: it exercises the Python-layer locks in pyion/utils.py and
-  # pyion/bp.py, which are not present on this branch. Add it as a second job
+  # pyion/bp.py, which are not present on this branch. Add it as a third job
   # once the Python-layer and C-layer branches converge.
