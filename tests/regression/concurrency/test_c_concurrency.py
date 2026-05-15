@@ -1,21 +1,29 @@
 """
 Real-ION C-layer concurrency regression test.
 
-Exercises the Phase 1 thread-safety fixes in pyion's C extension by driving
-the ``_bp`` extension directly (bypassing the Python-level wrappers in
-``pyion/bp.py``):
+Exercises the Phase 1 and Phase 2 thread-safety fixes in pyion's C extension
+by driving the ``_bp`` and ``_mgmt`` extensions directly (bypassing the
+Python-level wrappers in ``pyion/bp.py``).
 
+Phase 1 -- endpoint lifecycle:
   * Closing an endpoint while another thread is blocked in ``bp_receive``
     must wake the receiver and must not deadlock.
   * Interrupting an endpoint while a thread is blocked in ``bp_receive``
     must wake the receiver and must not deadlock.
 
-Before Phase 1, a lock held across the blocking ``bp_receive`` made the
-interrupt/close path deadlock -- and that deadlock occurs *inside* the
-``bp_close``/``bp_interrupt`` call itself. Every potentially-blocking C call
-is therefore run in its own daemon thread and watchdogged: if a call does not
-return within a bounded time it is reported as a deadlock failure rather than
-hanging the test run.
+Phase 2 -- serialization locks:
+  * Concurrent ``bp_send`` on one endpoint (per-endpoint send_lock).
+  * Concurrent ``_mgmt`` calls (the global mgmt_lock).
+  * Concurrent ``bp_attach`` (the global ion_global_lock).
+
+The Phase 2 tests are contention stress tests: they hammer each locked path
+from many threads and require every call to complete without a crash, a hang,
+or a corruption-induced error. They do not by themselves prove serialization,
+but a missing or broken lock would surface here as a crash or an error.
+
+Every potentially-blocking C call is run in a watchdogged thread: a call that
+does not return within a bounded time is reported as a deadlock failure rather
+than hanging the run.
 
 Requires a running ION node exposing endpoint ipn:1.1. The companion script
 ``run_c_concurrency_test.sh`` starts ION before invoking this test.
@@ -25,6 +33,7 @@ import time
 import threading
 
 import _bp
+import _mgmt
 
 # A C call that does not return within this many seconds is treated as a
 # deadlock (the operation itself wedged) or as a receiver that was never woken.
@@ -57,6 +66,27 @@ def call_in_thread(fn):
     return done, box
 
 
+def run_threads(target, n, timeout):
+    """Start n daemon threads running target(); join them against a deadline.
+
+    Raises AssertionError if any worker is still alive when the deadline
+    passes -- i.e. a locked path deadlocked.
+    """
+    threads = [threading.Thread(target=target, daemon=True) for _ in range(n)]
+    for t in threads:
+        t.start()
+    deadline = time.time() + timeout
+    for t in threads:
+        t.join(max(0.0, deadline - time.time()))
+    if any(t.is_alive() for t in threads):
+        raise AssertionError("DEADLOCK: a worker thread did not finish in %.0fs"
+                             % timeout)
+
+
+# --------------------------------------------------------------------------
+# Phase 1 -- endpoint lifecycle
+# --------------------------------------------------------------------------
+
 def test_close_unblocks_blocked_receiver():
     """base_bp_close must wake a blocked receiver and must itself not deadlock."""
     sap = _bp.bp_open(EID, 0, 0)
@@ -68,7 +98,7 @@ def test_close_unblocks_blocked_receiver():
 
     # bp_close is itself run in a thread: the Phase 1 regression deadlocks
     # *inside* this call, so it must be watchdogged, not called inline.
-    cl_done, cl_box = call_in_thread(lambda: _bp.bp_close(sap))
+    cl_done, _cl_box = call_in_thread(lambda: _bp.bp_close(sap))
     if not cl_done.wait(OP_TIMEOUT):
         raise AssertionError("DEADLOCK: bp_close did not return")
 
@@ -124,10 +154,84 @@ def test_repeated_close_while_receiving():
     print("    %d close-while-receiving cycles completed" % iterations)
 
 
+# --------------------------------------------------------------------------
+# Phase 2 -- serialization locks
+# --------------------------------------------------------------------------
+
+def test_concurrent_sends():
+    """Concurrent bp_send on one endpoint (per-endpoint send_lock)."""
+    threads = 6
+    per_thread = 20
+    sap = _bp.bp_open(EID, 0, 0)
+
+    def sender():
+        for _ in range(per_thread):
+            try:
+                # The bundle has nowhere to route on this minimal node; a
+                # routing/limbo error is fine. We are testing that the C send
+                # path does not crash or corrupt under concurrent callers.
+                _bp.bp_send(sap, "ipn:1.2", None, 3600, 1, 0, 0, 0, 0, b"x")
+            except Exception:  # noqa: BLE001
+                pass
+
+    run_threads(sender, threads, OP_TIMEOUT)
+
+    cl_done, _cl_box = call_in_thread(lambda: _bp.bp_close(sap))
+    if not cl_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: bp_close hung after concurrent sends")
+    print("    %d threads x %d concurrent sends completed"
+          % (threads, per_thread))
+
+
+def test_concurrent_mgmt_calls():
+    """Concurrent _mgmt read calls (the global mgmt_lock)."""
+    threads = 8
+    per_thread = 30
+    errors = []
+
+    def hammer():
+        for _ in range(per_thread):
+            try:
+                _mgmt.list_contacts()
+                _mgmt.list_ranges()
+                _mgmt.bp_endpoint_exists(EID)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+    run_threads(hammer, threads, OP_TIMEOUT)
+
+    if errors:
+        raise AssertionError("%d _mgmt call(s) failed under contention; first: %r"
+                             % (len(errors), errors[0]))
+    print("    %d threads x %d concurrent _mgmt call-sets completed"
+          % (threads, per_thread))
+
+
+def test_concurrent_attach():
+    """Concurrent bp_attach (the global ion_global_lock)."""
+    threads = 8
+    per_thread = 20
+    results = []
+
+    def attacher():
+        for _ in range(per_thread):
+            results.append(_bp.bp_attach())
+
+    run_threads(attacher, threads, OP_TIMEOUT)
+
+    if not results or not all(r is True for r in results):
+        raise AssertionError("bp_attach did not return True under contention")
+    print("    %d threads x %d concurrent bp_attach calls completed"
+          % (threads, per_thread))
+
+
 TESTS = [
     test_close_unblocks_blocked_receiver,
     test_interrupt_unblocks_blocked_receiver,
     test_repeated_close_while_receiving,
+    test_concurrent_sends,
+    test_concurrent_mgmt_calls,
+    test_concurrent_attach,
 ]
 
 
