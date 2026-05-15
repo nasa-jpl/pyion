@@ -1,0 +1,8 @@
+# bpadmin: a minimal BP node with a single endpoint.
+# No convergence-layer adapter is defined: the test never sends or receives
+# over a network, it only opens ipn:1.1 and blocks in bp_receive so that
+# interrupt/close behaviour can be exercised.
+1
+a scheme ipn 'ipnfw' 'ipnadminep'
+a endpoint ipn:1.1 x
+s
