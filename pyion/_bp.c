@@ -257,26 +257,31 @@ static PyObject *pyion_bp_open(PyObject *self, PyObject *args)
         return NULL;
     }
 
-    // Return the memory address of the SAP for this endpoint as an unsigned long
-    PyObject *ret = Py_BuildValue("k", state);
-    return ret;
+    // Return the endpoint's opaque handle as an unsigned long.
+    return Py_BuildValue("k", state->handle);
 }
 
 static PyObject *pyion_bp_close(PyObject *self, PyObject *args)
 {
     // Define variables
-    BpSapState *state;
+    unsigned long handle;
+    int status;
 
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
+    if (!PyArg_ParseTuple(args, "k", &handle))
         return NULL;
 
     // Request the close. base_bp_close wakes any blocked receiver and defers
-    // the actual free until no thread is using the state. After this call the
-    // state pointer must not be used again.
+    // the actual free until no thread is using the state.
     Py_BEGIN_ALLOW_THREADS
-    base_bp_close(state);
+    status = base_bp_close(handle);
     Py_END_ALLOW_THREADS
+
+    if (status == PYION_INVALID_HANDLE_ERR)
+    {
+        pyion_SetExc(PyExc_ValueError, "Invalid or already-closed endpoint handle.");
+        return NULL;
+    }
 
     Py_RETURN_NONE;
 }
@@ -288,14 +293,18 @@ static PyObject *pyion_bp_close(PyObject *self, PyObject *args)
 static PyObject *pyion_bp_interrupt(PyObject *self, PyObject *args)
 {
     // Define variables
-    BpSapState *state;
+    unsigned long handle;
 
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
+    if (!PyArg_ParseTuple(args, "k", &handle))
         return NULL;
 
     // base_bp_interrupt is a no-op unless the endpoint is currently receiving.
-    base_bp_interrupt(state);
+    if (base_bp_interrupt(handle) == PYION_INVALID_HANDLE_ERR)
+    {
+        pyion_SetExc(PyExc_ValueError, "Invalid or already-closed endpoint handle.");
+        return NULL;
+    }
 
     Py_RETURN_NONE;
 }
@@ -316,12 +325,12 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
     unsigned int retxTimer;
     BpCustodySwitch custodySwitch;
     BpAncillaryData *ancillaryData = NULL;
-    BpSapState *state = NULL;
+    unsigned long handle;
     BpTx txInfo;
     int status; //return status of bp_send
 
-    // Parse input arguments. First one is SAP memory address for this endpoint
-    if (!PyArg_ParseTuple(args, "ksziiiiiIs#", (unsigned long *)&state, &destEid, &reportEid, &ttl,
+    // Parse input arguments. First one is the endpoint handle.
+    if (!PyArg_ParseTuple(args, "ksziiiiiIs#", &handle, &destEid, &reportEid, &ttl,
                           &classOfService, (int *)&custodySwitch, &rrFlags, &ackReq, &retxTimer,
                           &data, &data_size))
         return NULL;
@@ -342,7 +351,7 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
 
     // Release the GIL
     Py_BEGIN_ALLOW_THREADS
-    status = base_bp_send(state, &txInfo);
+    status = base_bp_send(handle, &txInfo);
     Py_END_ALLOW_THREADS
 
     switch (status)
@@ -360,6 +369,9 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
     case PYION_CONN_ABORTED_ERR:
         pyion_SetExc(PyExc_ConnectionError, "Endpoint is closing.");
         return NULL;
+    case PYION_INVALID_HANDLE_ERR:
+        pyion_SetExc(PyExc_ValueError, "Invalid or already-closed endpoint handle.");
+        return NULL;
     case 3:
         pyion_SetExc(PyExc_RuntimeError, "Error while scheduling custodial retransmission (err code=%i).", 3);
         return NULL;
@@ -376,7 +388,7 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
 static PyObject *pyion_bp_receive(PyObject *self, PyObject *args)
 {
     // Define variables
-    BpSapState *state;
+    unsigned long handle;
     PyObject *ret_payload;
     PyObject *ret_payload_metadata;
     PyObject *ret;
@@ -384,16 +396,16 @@ static PyObject *pyion_bp_receive(PyObject *self, PyObject *args)
     BpRx msg;
 
     int return_header = 0; // Don't return header by default
-    
+
     // Initialize output structure
     base_init_bp_rx_payload(&msg);
 
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "ki", (unsigned long *)&state, &return_header))
+    if (!PyArg_ParseTuple(args, "ki", &handle, &return_header))
         return NULL;
 
     Py_BEGIN_ALLOW_THREADS // Release the GIL
-    status = base_bp_receive_data(state, &msg);
+    status = base_bp_receive_data(handle, &msg);
     Py_END_ALLOW_THREADS
 
     // If an error occurred, free our memory to prevent a leak.
@@ -420,6 +432,9 @@ static PyObject *pyion_bp_receive(PyObject *self, PyObject *args)
         return NULL;
     case PYION_BUSY_ERR:
         pyion_SetExc(PyExc_RuntimeError, "Another receive is already in progress on this endpoint.");
+        return NULL;
+    case PYION_INVALID_HANDLE_ERR:
+        pyion_SetExc(PyExc_ValueError, "Invalid or already-closed endpoint handle.");
         return NULL;
     }
 

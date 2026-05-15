@@ -39,7 +39,11 @@ typedef enum
 //  - ``send_lock`` serializes bp_send on this endpoint. Unlike ``state_lock``
 //    it may be held across the (possibly blocking) send; it only stalls other
 //    senders on the same endpoint, never receive/interrupt/close.
-typedef struct
+//  - ``handle`` is the opaque, never-reused integer the Python layer holds
+//    instead of a raw pointer. C entry points resolve it through a registry,
+//    so a stale handle (e.g. a double close) is rejected instead of
+//    dereferencing freed memory. ``registry_next`` links the registry.
+typedef struct BpSapState
 {
     BpSAP sap;
     atomic_int status;
@@ -52,6 +56,9 @@ typedef struct
     int close_requested;
 
     pthread_mutex_t send_lock;
+
+    unsigned long handle;
+    struct BpSapState *registry_next;
 } BpSapState;
 
 
@@ -115,19 +122,28 @@ int base_bp_attach();
  */
 void base_bp_detach();
 
+/** The functions below take an opaque endpoint ``handle`` (see BpSapState).
+ * The handle is resolved through a registry; an unknown handle yields
+ * PYION_INVALID_HANDLE_ERR rather than a use-after-free.
+ */
+
 /**
  * Request that an endpoint be closed. Marks the state as closing, wakes any
- * blocked receiver, and frees the state once no thread is using it. After
- * this call returns, ``state`` must not be used by the caller again.
+ * blocked receiver, and frees the state once no thread is using it. A second
+ * close of the same handle is rejected with PYION_INVALID_HANDLE_ERR.
  */
-int base_bp_close(BpSapState *state);
+int base_bp_close(unsigned long handle);
 
-int base_bp_interrupt(BpSapState *state);
+int base_bp_interrupt(unsigned long handle);
 
-int base_bp_receive_data(BpSapState *state, BpRx *msg);
+int base_bp_receive_data(unsigned long handle, BpRx *msg);
 
-int base_bp_send(BpSapState *state, BpTx *txInfo);
+int base_bp_send(unsigned long handle, BpTx *txInfo);
 
+/**
+ * Open an endpoint. On success ``*state`` is set and registered, and its
+ * ``handle`` field holds the opaque handle to return to the caller.
+ */
 int base_bp_open(BpSapState **state, char *ownEid, int detained, int mem_ctrl);
 
 

@@ -154,6 +154,35 @@ def test_repeated_close_while_receiving():
     print("    %d close-while-receiving cycles completed" % iterations)
 
 
+def test_stale_handle_rejected():
+    """Using an endpoint handle after close is rejected, not a use-after-free.
+
+    The first close frees the endpoint; the handle is now stale. A second
+    close, or any other operation on that handle, must raise rather than
+    dereference freed memory.
+    """
+    sap = _bp.bp_open(EID, 0, 0)
+
+    cl_done, _cl_box = call_in_thread(lambda: _bp.bp_close(sap))
+    if not cl_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: first bp_close did not return")
+
+    # Each of these targets the now-stale handle and must raise.
+    stale_ops = {
+        "bp_close": lambda: _bp.bp_close(sap),
+        "bp_interrupt": lambda: _bp.bp_interrupt(sap),
+        "bp_send": lambda: _bp.bp_send(sap, "ipn:1.2", None, 3600, 1, 0, 0, 0, 0, b"x"),
+        "bp_receive": lambda: _bp.bp_receive(sap, 0),
+    }
+    for name, op in stale_ops.items():
+        try:
+            op()
+        except Exception:  # noqa: BLE001 - any raised error is acceptable
+            continue
+        raise AssertionError("%s on a stale handle did not raise" % name)
+    print("    stale handle rejected by close/interrupt/send/receive")
+
+
 # --------------------------------------------------------------------------
 # Phase 2 -- serialization locks
 # --------------------------------------------------------------------------
@@ -260,6 +289,7 @@ TESTS = [
     test_close_unblocks_blocked_receiver,
     test_interrupt_unblocks_blocked_receiver,
     test_repeated_close_while_receiving,
+    test_stale_handle_rejected,
     test_concurrent_sends,
     test_concurrent_send_and_receive,
     test_concurrent_mgmt_calls,
