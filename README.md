@@ -17,6 +17,20 @@ ION's official repository is now available at https://github.com/nasa-jpl/ION-DT
 
 ION's official documentation is available at https://nasa-jpl.github.io/ION-DTN/.
 
+Regression Testing
+------------------
+
+Pyion includes a suite of regression tests to verify thread-safety and concurrency handling. These tests are located in ``tests/regression/concurrency``.
+
+**Python-level Concurrency Test** (``test_concurrency.py``):
+Verifies that the Python-level locks (global directory lock and endpoint-level serialization) correctly prevent race conditions.
+
+To run:
+```bash
+export PYTHONPATH=$PYTHONPATH:.
+export PYION_BP_VERSION=BPv7
+python3 tests/regression/concurrency/test_concurrency.py
+```
 
 License Terms
 -------------
