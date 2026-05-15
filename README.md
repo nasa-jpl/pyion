@@ -5,11 +5,15 @@ This repository contains the source code of **pyion**, a Python extension for th
 Pyion follows the release schedule of ION and places the relevant codebase in separate branches
 (e.g., for ION-3.7.0, checkout branch v3.7.0).
 
-.. Warning:: **Python 3.13+ Compatibility**
-   Python 3.13 introduced an experimental free-threading mode (removal of the GIL). 
-   **PYION is currently NOT fully thread-safe** in this mode. If you are using a free-threaded 
-   build of Python, you MUST enable the GIL by setting the environment variable 
-   `PYTHON_GIL=1` to avoid race conditions and potential crashes.
+> **Note: free-threaded Python compatibility**
+>
+> This affects only the *free-threaded* build of Python 3.13+ (`python3.13t`,
+> built with `--disable-gil`), which is a separate, opt-in build. Stock CPython
+> 3.13+ keeps the GIL and is unaffected.
+>
+> **PYION is currently NOT fully thread-safe** without the GIL. If you are running
+> a free-threaded build, set the environment variable `PYTHON_GIL=1` (or pass
+> `-X gil=1`) to re-enable the GIL and avoid race conditions and potential crashes.
 
 Pyion's documentation can be found at https://pyion.readthedocs.io/en/latest/.
 
