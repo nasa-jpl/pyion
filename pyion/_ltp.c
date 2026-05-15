@@ -78,32 +78,39 @@ static PyMethodDef module_methods[] = {
 };
 
 /* ============================================================================
- * === Define _ltp as a Python module
+ * === Define _ltp as a Python module (multi-phase initialization, PEP 489)
  * ============================================================================ */
 
+// Module execution slot: _ltp has no constants to register.
+static int _ltp_exec(PyObject *module) {
+    (void)module;
+    return 0;
+}
+
+static PyModuleDef_Slot _ltp_slots[] = {
+    {Py_mod_exec, _ltp_exec},
+#ifdef Py_mod_gil
+    // The LTP C layer is hardened for thread-safety (handle registry, refcount
+    // lifecycle, per-SAP and global locks); declare it safe without the GIL.
+    // On pre-3.13 Python Py_mod_gil is undefined and the module stays
+    // GIL-required.
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
+    {0, NULL}};
+
+static struct PyModuleDef moduledef = {
+    PyModuleDef_HEAD_INIT,
+    "_ltp",
+    module_docstring,
+    0, // m_size: multi-phase init requires >= 0
+    module_methods,
+    _ltp_slots,
+    NULL,
+    NULL,
+    NULL};
+
 PyMODINIT_FUNC PyInit__ltp(void) {
-    // Define variables
-    PyObject *module;
-
-    // Define module configuration parameters
-    static struct PyModuleDef moduledef = {
-        PyModuleDef_HEAD_INIT,
-        "_ltp",
-        module_docstring,
-        -1,
-        module_methods,
-        NULL,
-        NULL,
-        NULL,
-        NULL};
-
-    // Create the module
-    module = PyModule_Create(&moduledef);
-
-    // If module creation failed, return error
-    if (!module) return NULL;
-
-    return module;
+    return PyModuleDef_Init(&moduledef);
 }
 
 /* ============================================================================
@@ -165,30 +172,30 @@ static PyObject *pyion_ltp_open(PyObject *self, PyObject *args) {
         }
     }
 
-    // Return the memory address of the LTP state as an unsined long
-    PyObject *ret = Py_BuildValue("k", state);
-    return ret;
+    // Return the SAP's opaque handle as an unsigned long.
+    return Py_BuildValue("k", state->handle);
 }
 
 static PyObject *pyion_ltp_close(PyObject *self, PyObject *args) {
     // Define variables
-    LtpSAP *state;
+    unsigned long handle;
+    int status;
 
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
+    if (!PyArg_ParseTuple(args, "k", &handle))
         return NULL;
 
-    // If endpoint is in idle state, just close
-    if (state->status == SAP_IDLE) {
-        base_ltp_close(state);
-        Py_RETURN_NONE;
+    // Request the close. base_ltp_close wakes any blocked receiver and defers
+    // the actual free until no thread is using the SAP.
+    Py_BEGIN_ALLOW_THREADS
+    status = base_ltp_close(handle);
+    Py_END_ALLOW_THREADS
+
+    if (status == PYION_INVALID_HANDLE_ERR) {
+        PyErr_SetString(PyExc_ValueError, "Invalid or already-closed LTP handle.");
+        return NULL;
     }
 
-    // We assume that if you reach this point, you are always in 
-    // running state.
-    state->status = SAP_CLOSING;
-    ltp_interrupt(state->clientId);
-    
     Py_RETURN_NONE;
 }
 
@@ -198,18 +205,17 @@ static PyObject *pyion_ltp_close(PyObject *self, PyObject *args) {
 
 static PyObject *pyion_ltp_interrupt(PyObject *self, PyObject *args) {
     // Define variables
-    LtpSAP *state;
+    unsigned long handle;
 
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
+    if (!PyArg_ParseTuple(args, "k", &handle))
         return NULL;
 
-    // If access point is already closing, you can return
-    if (state->status != SAP_RUNNING)
-        Py_RETURN_NONE;
-
-    // Mark that you have transitioned to interruping state
-    base_ltp_interrupt(state);
+    // base_ltp_interrupt is a no-op unless the SAP is currently receiving.
+    if (base_ltp_interrupt(handle) == PYION_INVALID_HANDLE_ERR) {
+        PyErr_SetString(PyExc_ValueError, "Invalid or already-closed LTP handle.");
+        return NULL;
+    }
 
     Py_RETURN_NONE;
 }
@@ -221,13 +227,13 @@ static PyObject *pyion_ltp_interrupt(PyObject *self, PyObject *args) {
 static PyObject *pyion_ltp_send(PyObject *self, PyObject *args) {
     // Define variables
     char           err_msg[150];
-    LtpSAP         *state;
+    unsigned long  handle;
     int            ok;
     LtpTxPayload   txInfo;
     Py_ssize_t     data_size;
 
-    // Parse input arguments. First one is SAP memory address for this endpoint
-    if (!PyArg_ParseTuple(args, "kKs#", (unsigned long *)&state, &(txInfo.destEngineId),
+    // Parse input arguments. First one is the SAP handle.
+    if (!PyArg_ParseTuple(args, "kKs#", &handle, &(txInfo.destEngineId),
      &(txInfo.data), &data_size))
         return NULL;
 
@@ -239,16 +245,20 @@ static PyObject *pyion_ltp_send(PyObject *self, PyObject *args) {
     // NOTE 2: In general, ltp_send does not block. However, if you exceed the max
     //         number of export sessions defined in ltprc, then it will.
     Py_BEGIN_ALLOW_THREADS
-    ok = base_ltp_send(state, &txInfo);
+    ok = base_ltp_send(handle, &txInfo);
     Py_END_ALLOW_THREADS
 
     // Handle error in ltp_send
+    if (ok == PYION_INVALID_HANDLE_ERR) {
+        PyErr_SetString(PyExc_ValueError, "Invalid or already-closed LTP handle.");
+        return NULL;
+    }
     if (ok <= 0) {
         sprintf(err_msg, "Error while sending the data through LTP (err code=%i)", ok);
         PyErr_SetString(PyExc_RuntimeError, err_msg);
         return NULL;
     }
-    
+
     Py_RETURN_NONE;
 }
 
@@ -260,17 +270,17 @@ static PyObject *pyion_ltp_receive(PyObject *self, PyObject *args) {
     char err_msg[150];
 
     // Define variables
-    LtpSAP   *state;
+    unsigned long handle;
     LtpRxPayload payloadObj;
     int ok;
-    
+
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
+    if (!PyArg_ParseTuple(args, "k", &handle))
         return NULL;
 
     // Trigger reception of data
     Py_BEGIN_ALLOW_THREADS
-    ok = base_ltp_receive_data(state, &payloadObj);
+    ok = base_ltp_receive_data(handle, &payloadObj);
     Py_END_ALLOW_THREADS
 
 
@@ -312,17 +322,20 @@ static PyObject *pyion_ltp_receive(PyObject *self, PyObject *args) {
             //PyErr_SetString(PyExc_IOError, err_msg);
             return NULL;
 
+        case (PYION_INVALID_HANDLE_ERR):
+            PyErr_SetString(PyExc_ValueError, "Invalid or already-closed LTP handle.");
+            return NULL;
+
+        case (PYION_BUSY_ERR):
+            PyErr_SetString(PyExc_RuntimeError, "Another receive is already in progress on this LTP client.");
+            return NULL;
+
         default:
         ;
     }
 
-    // Close if necessary. Otherwise set to IDLE
-    if (state->status == SAP_CLOSING) {
-       base_ltp_close(state);
-    } else {
-        state->status = SAP_IDLE;
-    }
-
+    // base_ltp_receive_data resets the SAP status and the deferred free
+    // handles teardown; nothing to do here on the success path.
     PyObject *ret = Py_BuildValue("y#", payloadObj.payload, (Py_ssize_t)payloadObj.len);
 
     free(payloadObj.payload);
