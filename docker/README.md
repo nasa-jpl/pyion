@@ -4,25 +4,13 @@
 It is the image the test compose files (`tests/*/test_network.yaml`) expect
 under the name `pyion_bpv7:4.1.4a2`.
 
+The image is **self-contained**: ION-DTN is downloaded from the official
+`nasa-jpl/ION-DTN` repository and built during the image build. No local ION
+source tree is required.
+
 pyion itself is **not** compiled into the image. The compose files bind-mount
 this repository into the container and run `python3 setup.py install` at
 startup, so you can edit and rebuild pyion without rebuilding the image.
-
-## What you must provide
-
-The Dockerfile needs the ION-DTN source tree in its build context. Place it in
-this `docker/` directory as a directory named:
-
-```
-docker/ion-open-source-4.1.4a2/
-```
-
-(For a different version, use `ion-open-source-<version>/` and pass
-`--build-arg ION_VERSION=<version>`.)
-
-The ION source is not committed to this repository: it is large and carries
-its own license. Obtain the ION-DTN 4.1.4-a.2 release from the official
-project — see the ION links in the top-level `README.md` — and unpack it here.
 
 ## Build
 
@@ -31,10 +19,22 @@ project — see the ION links in the top-level `README.md` — and unpack it her
 docker build -t pyion_bpv7:4.1.4a2 -f docker/Dockerfile docker/
 ```
 
-The build compiles and installs ION's public API into `/usr/local` and leaves
-the ION source tree at `/home/ion-open-source-4.1.4a2`. `setup.py` needs both:
-`/usr/local` for the public headers/libraries and `ION_HOME` (the source tree)
-for ION's private headers.
+The build downloads ION-DTN, compiles and installs its public API into
+`/usr/local`, and leaves the ION source tree at
+`/home/ion-open-source-4.1.4a2`. `setup.py` needs both: `/usr/local` for the
+public headers/libraries and `ION_HOME` (the source tree) for ION's private
+headers.
+
+To build against a different ION version, override the build args. `ION_TAG`
+is the git tag in the ION-DTN repository; `ION_VERSION` names the install
+directory and must match the `ION_HOME` used by the test compose files:
+
+```bash
+docker build \
+    --build-arg ION_TAG=ion-open-source-<tag> \
+    --build-arg ION_VERSION=<version> \
+    -t pyion_bpv7:<version> -f docker/Dockerfile docker/
+```
 
 ## Run the tests
 

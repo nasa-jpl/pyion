@@ -8,9 +8,6 @@ pyion.egg-info
 *.pptx
 *.code-workspace
 
-# ION-DTN source tree supplied as a Docker build input (see docker/README.md)
-docker/ion-open-source-*/
-
 tests/bp_tests/nodes/ion_nodes
 tests/bp_tests/nodes/1/ion.log
 tests/bp_tests/nodes/1/node.stdout

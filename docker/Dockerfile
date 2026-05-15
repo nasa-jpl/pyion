@@ -1,29 +1,32 @@
 # ======================================================================
 # Dockerfile for building and testing pyion against a real ION-DTN node.
 #
-# The image bundles ION-DTN and the build toolchain. pyion itself is NOT
-# compiled into the image: the test compose files (tests/*/test_network.yaml)
-# bind-mount this repository and run `python3 setup.py install` at container
-# start, so pyion can be rebuilt without rebuilding the image.
+# The image is self-contained: ION-DTN is downloaded and built during the
+# image build, so no local ION source tree is required.
 #
-# Build input
-# -----------
-# This Dockerfile needs the ION-DTN source tree in its build context. Place
-# it next to this file as a directory named  ion-open-source-<ION_VERSION>
-# (default ION_VERSION = 4.1.4a2). See docker/README.md.
+# pyion itself is NOT compiled into the image. The test compose files
+# (tests/*/test_network.yaml) bind-mount this repository and run
+# `python3 setup.py install` at container start, so pyion can be rebuilt
+# without rebuilding the image.
 #
 # Build
 # -----
 #   docker build -t pyion_bpv7:4.1.4a2 -f docker/Dockerfile docker/
 #
-# A different ION version:
-#   docker build --build-arg ION_VERSION=<ver> -t pyion_bpv7:<ver> \
-#                -f docker/Dockerfile docker/
+# A different ION version (ION_TAG is the git tag in the ION-DTN repo;
+# ION_VERSION names the install directory and must match the ION_HOME in
+# the test compose files):
+#   docker build \
+#       --build-arg ION_TAG=ion-open-source-<tag> \
+#       --build-arg ION_VERSION=<ver> \
+#       -t pyion_bpv7:<ver> -f docker/Dockerfile docker/
 # ======================================================================
 
 FROM ubuntu:22.04
 
 ARG ION_VERSION=4.1.4a2
+ARG ION_TAG=ion-open-source-4.1.4-a.2
+ARG ION_REPO=https://github.com/nasa-jpl/ION-DTN
 ENV DEBIAN_FRONTEND=noninteractive
 
 # --- Build toolchain + Python development headers --------------------------
@@ -40,16 +43,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-setuptools \
         valgrind \
         gdb \
+        wget \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # --- ION-DTN ---------------------------------------------------------------
-# The ION source tree must be present in the build context (see README).
-COPY ion-open-source-${ION_VERSION} /home/ion-open-source-${ION_VERSION}
-
-# Build and install ION's public API to /usr/local. If the tree lacks a
-# generated ./configure (e.g. a git checkout), regenerate it first.
-RUN cd /home/ion-open-source-${ION_VERSION} \
+# Download the ION-DTN source for the requested tag and build/install its
+# public API into /usr/local. The GitHub archive has no generated ./configure,
+# so it is regenerated with autoreconf.
+RUN wget -q -O /tmp/ion.tar.gz "${ION_REPO}/archive/refs/tags/${ION_TAG}.tar.gz" \
+    && mkdir -p /home/ion-open-source-${ION_VERSION} \
+    && tar -xzf /tmp/ion.tar.gz -C /home/ion-open-source-${ION_VERSION} --strip-components=1 \
+    && rm /tmp/ion.tar.gz \
+    && cd /home/ion-open-source-${ION_VERSION} \
     && ( [ -x ./configure ] || autoreconf -fi ) \
     && ./configure \
     && make \
