@@ -24,28 +24,97 @@ void base_bp_detach()
     return bp_detach();
 }
 
-void base_close_endpoint(BpSapState *state)
+/* ============================================================================
+ * === Endpoint lifecycle: refcount-based deferred free
+ * ============================================================================
+ * No lock is ever held across a blocking ION call. A blocked bp_receive is
+ * woken via ION's own bp_interrupt; the refcount (not a lock) keeps the state
+ * struct alive while any thread is inside a C call on it.
+ */
+
+// Increment the in-use refcount. Returns 0 on success, -1 if the endpoint is
+// already closing (in which case the caller must NOT touch the state again).
+static int endpoint_acquire(BpSapState *state)
 {
-    // Close and free attendant
+    int closing;
+    pthread_mutex_lock(&(state->state_lock));
+    closing = state->close_requested;
+    if (!closing)
+        state->refcount++;
+    pthread_mutex_unlock(&(state->state_lock));
+    return closing ? -1 : 0;
+}
+
+// Tear down the SAP and free the state. The caller must guarantee that no
+// other thread is inside a C call on this state.
+static void endpoint_destroy(BpSapState *state)
+{
     if (state->attendant)
     {
         ionStopAttendant(state->attendant);
         free(state->attendant);
     }
-
-    // Close this SAP
     bp_close(state->sap);
-
-    // Free state memory
+    pthread_mutex_destroy(&(state->state_lock));
     free(state);
+}
+
+// Decrement the in-use refcount. If this was the last reference and a close
+// has been requested, the state is destroyed and freed here.
+static void endpoint_release(BpSapState *state)
+{
+    int do_free;
+    pthread_mutex_lock(&(state->state_lock));
+    state->refcount--;
+    do_free = (state->refcount == 0 && state->close_requested);
+    pthread_mutex_unlock(&(state->state_lock));
+    if (do_free)
+        endpoint_destroy(state);
+}
+
+int base_bp_close(BpSapState *state)
+{
+    pthread_mutex_lock(&(state->state_lock));
+    if (state->close_requested)
+    {
+        // A close is already in progress; nothing else to do.
+        pthread_mutex_unlock(&(state->state_lock));
+        return 0;
+    }
+    state->close_requested = 1;
+    atomic_store(&(state->status), EID_CLOSING);
+    state->refcount++; // close holds its own reference
+    pthread_mutex_unlock(&(state->state_lock));
+
+    // Wake any blocked receiver. Touching state->sap is safe: we hold a
+    // reference, so the state cannot be freed underneath us.
+    bp_interrupt(state->sap);
+    if (state->attendant)
+        ionPauseAttendant(state->attendant);
+
+    // Drop close's reference; frees the state if it was the last one.
+    endpoint_release(state);
+    return 0;
 }
 
 int base_bp_interrupt(BpSapState *state)
 {
-    bp_interrupt(state->sap);
-    // Pause the attendant
-    if (state->attendant)
-        ionPauseAttendant(state->attendant);
+    int expected = EID_RUNNING;
+
+    if (endpoint_acquire(state) != 0)
+        return 0; // already closing; the close path performs its own interrupt
+
+    // Transition into INTERRUPTING only from RUNNING, so an IDLE or CLOSING
+    // state is never clobbered. Interrupt ION only when we actually woke a
+    // running receiver, to avoid arming a spurious interrupt on an idle SAP.
+    if (atomic_compare_exchange_strong(&(state->status), &expected, EID_INTERRUPTING))
+    {
+        bp_interrupt(state->sap);
+        if (state->attendant)
+            ionPauseAttendant(state->attendant);
+    }
+
+    endpoint_release(state);
     return 0;
 }
 
@@ -92,12 +161,14 @@ int help_receive_data(BpSapState *state, BpDelivery *dlv, BpRx *msg)
     CHKZERO(dlv);
     CHKZERO(msg);
 
-    while (state->status == EID_RUNNING)
+    while (atomic_load(&(state->status)) == EID_RUNNING)
     {
+        // Blocking receive. No lock is held here: a concurrent interrupt or
+        // close wakes this call via bp_interrupt.
         rx_ret = bp_receive(state->sap, dlv, BP_BLOCKING);
-        // Acquire the GIL
+
         // Check if error while receiving a bundle
-        if ((rx_ret < 0) && (state->status == EID_RUNNING))
+        if ((rx_ret < 0) && (atomic_load(&(state->status)) == EID_RUNNING))
         {
             return PYION_IO_ERR;
         }
@@ -111,13 +182,13 @@ int help_receive_data(BpSapState *state, BpDelivery *dlv, BpRx *msg)
     }
 
     // If you exited because of interruption
-    if (state->status == EID_INTERRUPTING)
+    if (atomic_load(&(state->status)) == EID_INTERRUPTING)
     {
         return PYION_INTERRUPTED_ERR;
     }
 
     // If you exited because of closing
-    if (state->status == EID_CLOSING)
+    if (atomic_load(&(state->status)) == EID_CLOSING)
     {
         return PYION_CONN_ABORTED_ERR;
     }
@@ -183,20 +254,37 @@ int help_receive_data(BpSapState *state, BpDelivery *dlv, BpRx *msg)
 int base_bp_receive_data(BpSapState *state, BpRx *msg)
 {
     BpDelivery dlv;
+    int status;
 
-    int status = help_receive_data(state, &dlv, msg);
+    // Pin the state for the duration of this call.
+    if (endpoint_acquire(state) != 0)
+        return PYION_CONN_ABORTED_ERR;
+
+    // Enforce at most one concurrent receiver per endpoint.
+    pthread_mutex_lock(&(state->state_lock));
+    if (state->receivers > 0)
+    {
+        pthread_mutex_unlock(&(state->state_lock));
+        endpoint_release(state);
+        return PYION_BUSY_ERR;
+    }
+    state->receivers = 1;
+    atomic_store(&(state->status), EID_RUNNING);
+    pthread_mutex_unlock(&(state->state_lock));
+
+    // Blocking receive runs with no lock held.
+    status = help_receive_data(state, &dlv, msg);
     bp_release_delivery(&dlv, 1);
 
-    // Close if necessary. Otherwise set to IDLE
-    if (state->status == EID_CLOSING)
-    {
-        base_close_endpoint(state);
-    }
-    else
-    {
-        state->status = EID_IDLE;
-    }
+    // Clear the receiver slot. Leave an EID_CLOSING status intact so a
+    // concurrent close is not masked; the deferred free handles teardown.
+    pthread_mutex_lock(&(state->state_lock));
+    state->receivers = 0;
+    if (atomic_load(&(state->status)) != EID_CLOSING)
+        atomic_store(&(state->status), EID_IDLE);
+    pthread_mutex_unlock(&(state->state_lock));
 
+    endpoint_release(state);
     return status;
 }
 
@@ -204,17 +292,26 @@ int base_bp_open(BpSapState **state_ref, char *ownEid, int detained, int mem_ctr
 {
     // Define variables
     int ok;
+    BpSapState *state;
 
-    //malloc space for bp sap state
-    *state_ref = (BpSapState *)malloc(sizeof(BpSapState));
-
-    BpSapState *state = *state_ref;
+    // malloc space for bp sap state
+    state = (BpSapState *)malloc(sizeof(BpSapState));
+    *state_ref = state;
 
     if (state == NULL)
     {
         return -1;
     }
     memset((char *)state, 0, sizeof(BpSapState));
+
+    // Initialize the per-endpoint state lock.
+    if (pthread_mutex_init(&(state->state_lock), NULL) != 0)
+    {
+        free(state);
+        *state_ref = NULL;
+        return -2;
+    }
+    atomic_init(&(state->status), EID_IDLE);
 
     // Open the endpoint. This call fills out the SAP information
     // NOTE: An endpoint must be opened in detained mode if you want
@@ -229,11 +326,12 @@ int base_bp_open(BpSapState **state_ref, char *ownEid, int detained, int mem_ctr
     }
     if (ok < 0)
     {
+        pthread_mutex_destroy(&(state->state_lock));
+        free(state);
+        *state_ref = NULL;
         return PYION_IO_ERR;
     }
 
-    // Mark the SAP state for this endpoint as running
-    state->status = EID_IDLE;
     state->detained = (detained > 0);
 
     if (mem_ctrl)
@@ -242,8 +340,13 @@ int base_bp_open(BpSapState **state_ref, char *ownEid, int detained, int mem_ctr
         state->attendant = (ReqAttendant *)malloc(sizeof(ReqAttendant));
 
         // Initialize the attendant
-        if (ionStartAttendant(state->attendant))
+        if (state->attendant == NULL || ionStartAttendant(state->attendant))
         {
+            free(state->attendant);
+            bp_close(state->sap);
+            pthread_mutex_destroy(&(state->state_lock));
+            free(state);
+            *state_ref = NULL;
             return -3;
         }
     }
@@ -272,6 +375,11 @@ int base_bp_send(BpSapState *state, BpTx *txInfo)
     Object bundleZco;
     Object bundleSdr;
     int ok;
+    int result = 0;
+
+    // Pin the state for the duration of this call.
+    if (endpoint_acquire(state) != 0)
+        return PYION_CONN_ABORTED_ERR;
 
     // Initialize variables
     sdr = bp_get_sdr();
@@ -286,7 +394,8 @@ int base_bp_send(BpSapState *state, BpTx *txInfo)
                              txInfo->classOfService, 0, ZcoOutbound, state->attendant);
     if (bundleZco == 0)
     {
-        return PYION_IO_ERR;
+        result = PYION_IO_ERR;
+        goto done;
     }
     ok = bp_send(state->sap, txInfo->destEid, txInfo->reportEid, txInfo->ttl,
                  txInfo->classOfService, txInfo->custodySwitch, txInfo->rrFlags,
@@ -302,12 +411,16 @@ int base_bp_send(BpSapState *state, BpTx *txInfo)
         // Handle error in bp_memo
         if (ok < 0)
         {
-            return ok;
+            result = ok;
+            goto done;
         }
     }
 
     // If you have opened this endpoint in detained mode, you need to release the bundle
     if (state->detained)
         bp_release(newBundle);
-    return 0;
+
+done:
+    endpoint_release(state);
+    return result;
 }

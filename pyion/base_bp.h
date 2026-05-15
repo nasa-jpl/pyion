@@ -2,6 +2,8 @@
 #define BASEBP_H
 
 #include <bp.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 #define MAX_PREALLOC_BUFFER 1024
 
@@ -21,13 +23,30 @@ typedef enum
 
 
 // A combination of a BpSAP object and a representation of its status.
-// The status only used during reception for now.
+//
+// Thread-safety:
+//  - ``status`` holds SapStateEnum values but is declared atomic because it is
+//    read by a receiver thread (in its blocking loop) while being written by
+//    interrupt/close on other threads.
+//  - ``state_lock`` is a short-held mutex protecting the bookkeeping fields
+//    below. It is NEVER held across a blocking ION call.
+//  - ``refcount`` tracks how many threads are currently inside a C call on
+//    this state. The state is freed only when refcount drops to 0 after a
+//    close has been requested (deferred free), preventing use-after-free.
+//  - ``receivers`` enforces at most one concurrent bp_receive (0 or 1).
+//  - ``close_requested`` marks that a close is pending; once set, no new
+//    operation may acquire the state.
 typedef struct
 {
     BpSAP sap;
-    SapStateEnum status;
+    atomic_int status;
     int detained;
     ReqAttendant *attendant;
+
+    pthread_mutex_t state_lock;
+    int refcount;
+    int receivers;
+    int close_requested;
 } BpSapState;
 
 
@@ -91,7 +110,12 @@ int base_bp_attach();
  */
 void base_bp_detach();
 
-void base_close_endpoint(BpSapState *state);
+/**
+ * Request that an endpoint be closed. Marks the state as closing, wakes any
+ * blocked receiver, and frees the state once no thread is using it. After
+ * this call returns, ``state`` must not be used by the caller again.
+ */
+int base_bp_close(BpSapState *state);
 
 int base_bp_interrupt(BpSapState *state);
 

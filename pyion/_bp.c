@@ -226,29 +226,30 @@ static PyObject *pyion_bp_open(PyObject *self, PyObject *args)
         return NULL;
 
     ok = base_bp_open(&state, ownEid, detained, mem_ctrl);
-    // Allocate memory for state and initialize to zeros
+
+    // Handle errors. On any failure base_bp_open leaves *state == NULL.
     if (ok == -1)
     {
         pyion_SetExc(PyExc_RuntimeError, "Cannot malloc for BP state.");
         return NULL;
     }
-
-    // Set memory contents to zeros
-
-    // Handle error while opening endpoint
     if (ok == -2)
     {
-        pyion_SetExc(PyExc_ConnectionError, "Cannot open endpoint '%s'. Is it defined in .bprc? Is it already in use?", ownEid);
+        pyion_SetExc(PyExc_RuntimeError, "Cannot initialize endpoint lock.");
         return NULL;
     }
-
     if (ok == -3)
     {
         pyion_SetExc(PyExc_RuntimeError, "Can't initialize memory attendant.");
         return NULL;
     }
+    if (ok < 0)
+    {
+        pyion_SetExc(PyExc_ConnectionError, "Cannot open endpoint '%s'. Is it defined in .bprc? Is it already in use?", ownEid);
+        return NULL;
+    }
 
-    // Return the memory address of the SAP for this endpoint as an unsined long
+    // Return the memory address of the SAP for this endpoint as an unsigned long
     PyObject *ret = Py_BuildValue("k", state);
     return ret;
 }
@@ -262,17 +263,12 @@ static PyObject *pyion_bp_close(PyObject *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
         return NULL;
 
-    // If endpoint is in idle state, just close
-    if (state->status == EID_IDLE)
-    {
-        base_close_endpoint(state);
-        Py_RETURN_NONE;
-    }
-
-    // We assume that if you reach this point, you are always in
-    // running state.
-    state->status = EID_CLOSING;
-    bp_interrupt(state->sap);
+    // Request the close. base_bp_close wakes any blocked receiver and defers
+    // the actual free until no thread is using the state. After this call the
+    // state pointer must not be used again.
+    Py_BEGIN_ALLOW_THREADS
+    base_bp_close(state);
+    Py_END_ALLOW_THREADS
 
     Py_RETURN_NONE;
 }
@@ -290,12 +286,7 @@ static PyObject *pyion_bp_interrupt(PyObject *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
         return NULL;
 
-    // If EID is not running, you do not need to interrupt
-    if (state->status != EID_RUNNING)
-        Py_RETURN_NONE;
-
-    // Mark that you have transitioned to interruping state
-    state->status = EID_INTERRUPTING;
+    // base_bp_interrupt is a no-op unless the endpoint is currently receiving.
     base_bp_interrupt(state);
 
     Py_RETURN_NONE;
@@ -358,6 +349,9 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
     case PYION_IO_ERR:
         pyion_SetExc(PyExc_MemoryError, "ZCO object creation failed.");
         return NULL;
+    case PYION_CONN_ABORTED_ERR:
+        pyion_SetExc(PyExc_ConnectionError, "Endpoint is closing.");
+        return NULL;
     case 3:
         pyion_SetExc(PyExc_RuntimeError, "Error while scheduling custodial retransmission (err code=%i).", 3);
         return NULL;
@@ -390,9 +384,6 @@ static PyObject *pyion_bp_receive(PyObject *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "ki", (unsigned long *)&state, &return_header))
         return NULL;
 
-    // Mark as running
-    state->status = EID_RUNNING;
-
     Py_BEGIN_ALLOW_THREADS // Release the GIL
     status = base_bp_receive_data(state, &msg);
     Py_END_ALLOW_THREADS
@@ -418,6 +409,9 @@ static PyObject *pyion_bp_receive(PyObject *self, PyObject *args)
         return NULL;
     case PYION_SDR_ERR:
         pyion_SetExc(PyExc_MemoryError, "SDR Failure");
+        return NULL;
+    case PYION_BUSY_ERR:
+        pyion_SetExc(PyExc_RuntimeError, "Another receive is already in progress on this endpoint.");
         return NULL;
     }
 
