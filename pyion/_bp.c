@@ -153,6 +153,14 @@ static int _bp_exec(PyObject *module)
 
 static PyModuleDef_Slot _bp_slots[] = {
     {Py_mod_exec, _bp_exec},
+#ifdef Py_mod_gil
+    // Declare this module safe to run without the GIL. The C layer is
+    // hardened for thread-safety (refcount-based endpoint lifecycle, per-SAP
+    // and global locks) and validated under free-threading and
+    // ThreadSanitizer. On pre-3.13 Python Py_mod_gil is undefined and the
+    // module remains GIL-required.
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
     {0, NULL}};
 
 static struct PyModuleDef moduledef = {

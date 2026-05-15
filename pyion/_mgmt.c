@@ -143,6 +143,13 @@ static int _mgmt_exec(PyObject *module) {
 
 static PyModuleDef_Slot _mgmt_slots[] = {
     {Py_mod_exec, _mgmt_exec},
+#ifdef Py_mod_gil
+    // Declare this module safe to run without the GIL. All _mgmt entry points
+    // are serialized by mgmt_lock and validated under free-threading and
+    // ThreadSanitizer. On pre-3.13 Python Py_mod_gil is undefined and the
+    // module remains GIL-required.
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
     {0, NULL}};
 
 static struct PyModuleDef moduledef = {

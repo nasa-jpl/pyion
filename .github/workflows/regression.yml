@@ -95,18 +95,20 @@ jobs:
           cache-from: type=gha,scope=ft
           cache-to: type=gha,mode=max,scope=ft
 
-      # PYTHON_GIL=0 keeps the GIL disabled even though the extensions do not
-      # yet declare free-threading support, so the C code runs truly GIL-free.
+      # No PYTHON_GIL override: _bp and _mgmt declare Py_MOD_GIL_NOT_USED, so
+      # importing them must leave the GIL disabled on a free-threaded build.
+      # The assertion fails the job if that slot ever stops taking effect.
       - name: Concurrency regression test (free-threaded)
         run: |
           docker run --rm --shm-size=256m \
-            -e PYTHONUNBUFFERED=1 -e PYTHON_GIL=0 \
+            -e PYTHONUNBUFFERED=1 \
             -v "$GITHUB_WORKSPACE":/home/ion-interface \
             pyion_ft:4.1.4a2 bash -c '
               set -e
               cd /home/ion-interface
               rm -rf build
               python3 setup.py install >/tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+              python3 -c "import _bp, _mgmt, sys; assert not sys._is_gil_enabled(), \"GIL re-enabled despite Py_mod_gil slot\"; print(\"free-threading active: GIL disabled\")"
               bash tests/regression/concurrency/run_c_concurrency_test.sh
             '
 
@@ -119,7 +121,7 @@ jobs:
       - name: Concurrency regression test (free-threaded + ThreadSanitizer)
         run: |
           docker run --rm --shm-size=256m \
-            -e PYTHONUNBUFFERED=1 -e PYTHON_GIL=0 \
+            -e PYTHONUNBUFFERED=1 \
             -v "$GITHUB_WORKSPACE":/home/ion-interface \
             pyion_ft:4.1.4a2 bash -c '
               set -e
