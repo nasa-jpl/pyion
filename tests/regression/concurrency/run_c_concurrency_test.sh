@@ -31,6 +31,7 @@ TEST_TIMEOUT=180         # seconds for the test itself
 
 cleanup_ion() {
     cd "$NODE_DIR" || return
+    timeout 30 ltpadmin . >/dev/null 2>&1
     timeout 30 bpadmin  . >/dev/null 2>&1
     sleep 1
     timeout 30 ionadmin . >/dev/null 2>&1
@@ -43,7 +44,7 @@ killm >/dev/null 2>&1
 # --- Start ION -------------------------------------------------------------
 cd "$NODE_DIR" || exit 1
 echo "Starting ION node..."
-for cmd in "ionadmin host.ionrc" "ionsecadmin host.ionsecrc" "bpadmin host.bprc"; do
+for cmd in "ionadmin host.ionrc" "ionsecadmin host.ionsecrc" "bpadmin host.bprc" "ltpadmin host.ltprc"; do
     if ! timeout "$ION_START_TIMEOUT" $cmd; then
         echo "ION startup step failed or timed out: $cmd"
         cleanup_ion

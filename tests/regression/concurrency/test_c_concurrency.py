@@ -34,6 +34,7 @@ import threading
 
 import _bp
 import _mgmt
+import _ltp
 
 # A C call that does not return within this many seconds is treated as a
 # deadlock (the operation itself wedged) or as a receiver that was never woken.
@@ -42,6 +43,7 @@ OP_TIMEOUT = 10.0
 SETTLE = 1.0
 
 EID = "ipn:1.1"
+LTP_CLIENT = 4  # an LTP client id not used by BP/SDA/CFDP
 
 
 def call_in_thread(fn):
@@ -286,6 +288,71 @@ def test_concurrent_attach():
 
 
 # --------------------------------------------------------------------------
+# LTP -- the _ltp extension, hardened with the same design as _bp
+# --------------------------------------------------------------------------
+
+def test_ltp_close_unblocks_receiver():
+    """base_ltp_close must wake a thread blocked in ltp_receive."""
+    sap = _ltp.ltp_open(LTP_CLIENT)
+
+    rx_done, _rx_box = call_in_thread(lambda: _ltp.ltp_receive(sap))
+    time.sleep(SETTLE)
+    if rx_done.is_set():
+        raise AssertionError("LTP receiver never blocked; cannot test close")
+
+    cl_done, _cl_box = call_in_thread(lambda: _ltp.ltp_close(sap))
+    if not cl_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: ltp_close did not return")
+    if not rx_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: LTP receiver still blocked after close")
+    print("    ltp_close returned; LTP receiver woke")
+
+
+def test_ltp_interrupt_unblocks_receiver():
+    """base_ltp_interrupt must wake a thread blocked in ltp_receive."""
+    sap = _ltp.ltp_open(LTP_CLIENT)
+
+    rx_done, _rx_box = call_in_thread(lambda: _ltp.ltp_receive(sap))
+    time.sleep(SETTLE)
+    if rx_done.is_set():
+        raise AssertionError("LTP receiver never blocked; cannot test interrupt")
+
+    int_done, _int_box = call_in_thread(lambda: _ltp.ltp_interrupt(sap))
+    if not int_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: ltp_interrupt did not return")
+    if not rx_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: LTP receiver still blocked after interrupt")
+
+    cl_done, _cl_box = call_in_thread(lambda: _ltp.ltp_close(sap))
+    if not cl_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: cleanup ltp_close did not return")
+    print("    ltp_interrupt returned; LTP receiver woke")
+
+
+def test_ltp_stale_handle_rejected():
+    """Using an LTP handle after close is rejected, not a use-after-free."""
+    sap = _ltp.ltp_open(LTP_CLIENT)
+
+    cl_done, _cl_box = call_in_thread(lambda: _ltp.ltp_close(sap))
+    if not cl_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: first ltp_close did not return")
+
+    stale_ops = {
+        "ltp_close": lambda: _ltp.ltp_close(sap),
+        "ltp_interrupt": lambda: _ltp.ltp_interrupt(sap),
+        "ltp_send": lambda: _ltp.ltp_send(sap, 1, b"x"),
+        "ltp_receive": lambda: _ltp.ltp_receive(sap),
+    }
+    for name, op in stale_ops.items():
+        try:
+            op()
+        except Exception:  # noqa: BLE001 - any raised error is acceptable
+            continue
+        raise AssertionError("%s on a stale LTP handle did not raise" % name)
+    print("    stale LTP handle rejected by close/interrupt/send/receive")
+
+
+# --------------------------------------------------------------------------
 # Deferred -- waiting on an external dependency, not executed yet
 # --------------------------------------------------------------------------
 
@@ -346,6 +413,9 @@ TESTS = [
     test_concurrent_send_and_receive,
     test_concurrent_mgmt_calls,
     test_concurrent_attach,
+    test_ltp_close_unblocks_receiver,
+    test_ltp_interrupt_unblocks_receiver,
+    test_ltp_stale_handle_rejected,
 ]
 
 
@@ -356,6 +426,11 @@ def main():
 
     if _bp.bp_attach() is not True:
         print("OVERALL STATUS: FAILED (could not attach to BP)")
+        return 1
+    try:
+        _ltp.ltp_attach()
+    except Exception as exc:  # noqa: BLE001
+        print("OVERALL STATUS: FAILED (could not attach to LTP: %s)" % exc)
         return 1
 
     failures = 0
