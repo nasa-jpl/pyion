@@ -126,33 +126,12 @@ static PyMethodDef module_methods[] = {
 };
 
 /* ============================================================================
- * === Define _bp as a Python module
+ * === Define _bp as a Python module (multi-phase initialization, PEP 489)
  * ============================================================================ */
 
-PyMODINIT_FUNC PyInit__bp(void)
+// Module execution slot: populate the module with constants.
+static int _bp_exec(PyObject *module)
 {
-    // Define variables
-    PyObject *module;
-
-    // Define module configuration parameters
-    static struct PyModuleDef moduledef = {
-        PyModuleDef_HEAD_INIT,
-        "_bp",
-        module_docstring,
-        -1,
-        module_methods,
-        NULL,
-        NULL,
-        NULL,
-        NULL};
-
-    // Create the module
-    module = PyModule_Create(&moduledef);
-
-    // If module creation failed, return error
-    if (!module)
-        return NULL;
-
     // Add constants to be used in Python interface
     PyModule_AddIntMacro(module, BP_BULK_PRIORITY);
     PyModule_AddIntMacro(module, BP_STD_PRIORITY);
@@ -169,7 +148,27 @@ PyMODINIT_FUNC PyInit__bp(void)
     PyModule_AddIntConstant(module, "SourceCustodyOptional", SourceCustodyOptional);
     PyModule_AddIntConstant(module, "SourceCustodyRequired", SourceCustodyRequired);
 
-    return module;
+    return 0;
+}
+
+static PyModuleDef_Slot _bp_slots[] = {
+    {Py_mod_exec, _bp_exec},
+    {0, NULL}};
+
+static struct PyModuleDef moduledef = {
+    PyModuleDef_HEAD_INIT,
+    "_bp",
+    module_docstring,
+    0, // m_size: multi-phase init requires >= 0
+    module_methods,
+    _bp_slots,
+    NULL,
+    NULL,
+    NULL};
+
+PyMODINIT_FUNC PyInit__bp(void)
+{
+    return PyModuleDef_Init(&moduledef);
 }
 
 /* ============================================================================

@@ -105,32 +105,32 @@ static PyMethodDef module_methods[] = {
 };
 
 /* ============================================================================
- * === Define _mgmt as a Python module
+ * === Define _mgmt as a Python module (multi-phase initialization, PEP 489)
  * ============================================================================ */
 
+// Module execution slot: _mgmt has no constants to register.
+static int _mgmt_exec(PyObject *module) {
+    (void)module;
+    return 0;
+}
+
+static PyModuleDef_Slot _mgmt_slots[] = {
+    {Py_mod_exec, _mgmt_exec},
+    {0, NULL}};
+
+static struct PyModuleDef moduledef = {
+    PyModuleDef_HEAD_INIT,
+    "_mgmt",
+    module_docstring,
+    0, // m_size: multi-phase init requires >= 0
+    module_methods,
+    _mgmt_slots,
+    NULL,
+    NULL,
+    NULL};
+
 PyMODINIT_FUNC PyInit__mgmt(void) {
-    // Define variables
-    PyObject *module;
-
-    // Define module configuration parameters
-    static struct PyModuleDef moduledef = {
-        PyModuleDef_HEAD_INIT,
-        "_mgmt",
-        module_docstring,
-        -1,
-        module_methods,
-        NULL,
-        NULL,
-        NULL,
-        NULL};
-
-    // Create the module
-    module = PyModule_Create(&moduledef);
-
-    // If module creation failed, return error
-    if (!module) return NULL;
-
-    return module;
+    return PyModuleDef_Init(&moduledef);
 }
 
 /* ============================================================================
