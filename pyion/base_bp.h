@@ -36,6 +36,9 @@ typedef enum
 //  - ``receivers`` enforces at most one concurrent bp_receive (0 or 1).
 //  - ``close_requested`` marks that a close is pending; once set, no new
 //    operation may acquire the state.
+//  - ``send_lock`` serializes bp_send on this endpoint. Unlike ``state_lock``
+//    it may be held across the (possibly blocking) send; it only stalls other
+//    senders on the same endpoint, never receive/interrupt/close.
 typedef struct
 {
     BpSAP sap;
@@ -47,6 +50,8 @@ typedef struct
     int refcount;
     int receivers;
     int close_requested;
+
+    pthread_mutex_t send_lock;
 } BpSapState;
 
 

@@ -13,15 +13,24 @@
 #include "_utils.c"
 #include "macros.h"
 
+// Serializes process-global ION attach/detach. These mutate state shared by
+// every endpoint, so they must not run concurrently with one another.
+static pthread_mutex_t ion_global_lock = PTHREAD_MUTEX_INITIALIZER;
+
 int base_bp_attach()
 {
-    int result = bp_attach();
+    int result;
+    pthread_mutex_lock(&ion_global_lock);
+    result = bp_attach();
+    pthread_mutex_unlock(&ion_global_lock);
     return result;
 }
 
 void base_bp_detach()
 {
-    return bp_detach();
+    pthread_mutex_lock(&ion_global_lock);
+    bp_detach();
+    pthread_mutex_unlock(&ion_global_lock);
 }
 
 /* ============================================================================
@@ -56,6 +65,7 @@ static void endpoint_destroy(BpSapState *state)
     }
     bp_close(state->sap);
     pthread_mutex_destroy(&(state->state_lock));
+    pthread_mutex_destroy(&(state->send_lock));
     free(state);
 }
 
@@ -304,9 +314,16 @@ int base_bp_open(BpSapState **state_ref, char *ownEid, int detained, int mem_ctr
     }
     memset((char *)state, 0, sizeof(BpSapState));
 
-    // Initialize the per-endpoint state lock.
+    // Initialize the per-endpoint locks.
     if (pthread_mutex_init(&(state->state_lock), NULL) != 0)
     {
+        free(state);
+        *state_ref = NULL;
+        return -2;
+    }
+    if (pthread_mutex_init(&(state->send_lock), NULL) != 0)
+    {
+        pthread_mutex_destroy(&(state->state_lock));
         free(state);
         *state_ref = NULL;
         return -2;
@@ -327,6 +344,7 @@ int base_bp_open(BpSapState **state_ref, char *ownEid, int detained, int mem_ctr
     if (ok < 0)
     {
         pthread_mutex_destroy(&(state->state_lock));
+        pthread_mutex_destroy(&(state->send_lock));
         free(state);
         *state_ref = NULL;
         return PYION_IO_ERR;
@@ -345,6 +363,7 @@ int base_bp_open(BpSapState **state_ref, char *ownEid, int detained, int mem_ctr
             free(state->attendant);
             bp_close(state->sap);
             pthread_mutex_destroy(&(state->state_lock));
+            pthread_mutex_destroy(&(state->send_lock));
             free(state);
             *state_ref = NULL;
             return -3;
@@ -380,6 +399,11 @@ int base_bp_send(BpSapState *state, BpTx *txInfo)
     // Pin the state for the duration of this call.
     if (endpoint_acquire(state) != 0)
         return PYION_CONN_ABORTED_ERR;
+
+    // Serialize sends on this endpoint. send_lock may be held across the
+    // (possibly blocking) send: it only stalls other senders on the same
+    // endpoint, never receive/interrupt/close, which use other locks.
+    pthread_mutex_lock(&(state->send_lock));
 
     // Initialize variables
     sdr = bp_get_sdr();
@@ -421,6 +445,7 @@ int base_bp_send(BpSapState *state, BpTx *txInfo)
         bp_release(newBundle);
 
 done:
+    pthread_mutex_unlock(&(state->send_lock));
     endpoint_release(state);
     return result;
 }
