@@ -183,6 +183,37 @@ def test_concurrent_sends():
           % (threads, per_thread))
 
 
+def test_concurrent_send_and_receive():
+    """Concurrent bp_send and bp_receive on the same endpoint.
+
+    Send and receive use different locks, so they are allowed to run at the
+    same time on one endpoint; this checks that doing so does not crash or
+    corrupt the SAP.
+    """
+    sap = _bp.bp_open(EID, 0, 0)
+
+    rx_done, _rx_box = call_in_thread(lambda: _bp.bp_receive(sap, 0))
+    time.sleep(SETTLE)
+    if rx_done.is_set():
+        raise AssertionError("receiver never blocked; cannot test send+receive")
+
+    def sender():
+        for _ in range(20):
+            try:
+                _bp.bp_send(sap, "ipn:1.2", None, 3600, 1, 0, 0, 0, 0, b"x")
+            except Exception:  # noqa: BLE001
+                pass
+
+    run_threads(sender, 4, OP_TIMEOUT)
+
+    cl_done, _cl_box = call_in_thread(lambda: _bp.bp_close(sap))
+    if not cl_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: bp_close hung after send+receive")
+    if not rx_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: receiver still blocked after close")
+    print("    concurrent send + receive on one endpoint completed")
+
+
 def test_concurrent_mgmt_calls():
     """Concurrent _mgmt read calls (the global mgmt_lock)."""
     threads = 8
@@ -230,6 +261,7 @@ TESTS = [
     test_interrupt_unblocks_blocked_receiver,
     test_repeated_close_while_receiving,
     test_concurrent_sends,
+    test_concurrent_send_and_receive,
     test_concurrent_mgmt_calls,
     test_concurrent_attach,
 ]

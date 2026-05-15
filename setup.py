@@ -174,6 +174,22 @@ c_macros = [
     ('PYION_BP_VERSION', bp_version)
 ]
 
+# Optional sanitizer build. Set PYION_SANITIZE to a sanitizer list (e.g.
+# "address,undefined") to compile and link the C extensions with that
+# sanitizer. Used by the C-layer concurrency regression test to validate
+# memory safety (use-after-free, buffer overflow, undefined behavior).
+link_args = []
+_sanitize = os.environ.get('PYION_SANITIZE')
+if _sanitize:
+    _san_flags = [
+        '-fsanitize={}'.format(_sanitize),
+        '-fno-omit-frame-pointer',
+        '-fno-sanitize-recover=all',
+        '-g',
+    ]
+    compile_args += _san_flags
+    link_args    += _san_flags
+
 # ========================================================================================
 # === Define all pyion C Extensions
 # ========================================================================================
@@ -186,6 +202,7 @@ _mgmt = Extension(
     library_dirs=[str(ion_lib)],
     sources=['./pyion/_mgmt.c'],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 
@@ -201,6 +218,7 @@ _bp = Extension(
         './pyion/base_bp.c'
     ],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 
@@ -212,6 +230,7 @@ _cfdp = Extension(
     library_dirs=[str(ion_lib), str(cfdp_lib)],
     sources=['./pyion/_cfdp.c', './pyion/base_cfdp.c'],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 
@@ -224,6 +243,7 @@ _ltp = Extension(
     sources=['./pyion/_ltp.c',
     './pyion/_utils.c', './pyion/base_ltp.c'],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 
@@ -235,6 +255,7 @@ _mem = Extension(
     library_dirs=[str(ion_lib)],
     sources=['./pyion/_mem.c', './pyion/base_mem.c'],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 

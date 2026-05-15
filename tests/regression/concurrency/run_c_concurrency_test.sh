@@ -14,6 +14,12 @@
 # Usage
 # -----
 #   bash tests/regression/concurrency/run_c_concurrency_test.sh
+#
+# To run under a sanitizer, build pyion with PYION_SANITIZE and point
+# PYION_ASAN_PRELOAD at the sanitizer runtime:
+#   PYION_SANITIZE=address,undefined python3 setup.py build_ext
+#   PYION_ASAN_PRELOAD=$(gcc -print-file-name=libasan.so) \
+#       bash tests/regression/concurrency/run_c_concurrency_test.sh
 # ======================================================================
 set -u
 
@@ -47,8 +53,20 @@ done
 sleep 2
 
 # --- Run the test ----------------------------------------------------------
+# When PYION_ASAN_PRELOAD is set, the test runs under the sanitizer runtime
+# (pyion must have been built with PYION_SANITIZE). Preload is scoped to the
+# Python process only: ION's admin tools above are not sanitizer-instrumented
+# and must not inherit it.
 cd "$HERE"
-timeout "$TEST_TIMEOUT" python3 test_c_concurrency.py
+if [ -n "${PYION_ASAN_PRELOAD:-}" ]; then
+    echo "Running test under sanitizer ($PYION_ASAN_PRELOAD)..."
+    LD_PRELOAD="$PYION_ASAN_PRELOAD" \
+    ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}" \
+    UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1}" \
+        timeout "$TEST_TIMEOUT" python3 test_c_concurrency.py
+else
+    timeout "$TEST_TIMEOUT" python3 test_c_concurrency.py
+fi
 RC=$?
 if [ "$RC" -eq 124 ]; then
     echo "OVERALL STATUS: FAILED (test timed out after ${TEST_TIMEOUT}s -- likely deadlock)"
