@@ -285,6 +285,58 @@ def test_concurrent_attach():
           % (threads, per_thread))
 
 
+# --------------------------------------------------------------------------
+# Deferred -- waiting on an external dependency, not executed yet
+# --------------------------------------------------------------------------
+
+def test_concurrent_open_same_endpoint():
+    """Concurrent bp_open of the same endpoint from several threads.
+
+    DEFERRED to ION 4.2.0. ION 4.1.4-a.2's bp_open is not safe for a
+    concurrent open of the same endpoint; an ION 4.2.0 update is required
+    before this can pass. Until the test node moves to ION 4.2.0 this case
+    is listed in DEFERRED_TESTS and is not executed.
+
+    Expected behaviour once enabled: exactly one bp_open(EID) succeeds, the
+    others raise cleanly (endpoint already in use) with no crash, and the
+    winning handle can then be used and closed.
+    """
+    n = 6
+    results = []
+    results_lock = threading.Lock()
+
+    def opener():
+        try:
+            outcome = ("opened", _bp.bp_open(EID, 0, 0))
+        except Exception as exc:  # noqa: BLE001
+            outcome = ("error", exc)
+        with results_lock:
+            results.append(outcome)
+
+    run_threads(opener, n, OP_TIMEOUT)
+
+    opened = [h for kind, h in results if kind == "opened"]
+    if len(opened) != 1:
+        raise AssertionError(
+            "expected exactly 1 successful bp_open, got %d" % len(opened))
+
+    # The endpoint that won must be usable and closable.
+    cl_done, _cl_box = call_in_thread(lambda: _bp.bp_close(opened[0]))
+    if not cl_done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: bp_close hung after concurrent open")
+    print("    one bp_open won; the rest were rejected cleanly")
+
+
+# Tests deferred until an external dependency lands. They are kept here,
+# version-controlled and visible, but are not executed -- main() reports them
+# as skipped. Move an entry into TESTS once its dependency is satisfied.
+DEFERRED_TESTS = [
+    (test_concurrent_open_same_endpoint,
+     "deferred to ION 4.2.0: concurrent bp_open of one endpoint is not safe "
+     "until the ION 4.2.0 update is complete"),
+]
+
+
 TESTS = [
     test_close_unblocks_blocked_receiver,
     test_interrupt_unblocks_blocked_receiver,
@@ -315,6 +367,11 @@ def main():
         except Exception as exc:  # noqa: BLE001
             failures += 1
             print("  [FAIL] %s: %s" % (test.__name__, exc))
+
+    # Deferred tests are reported but not run, and do not affect the result.
+    for test, reason in DEFERRED_TESTS:
+        print("\nDeferred: %s" % test.__name__)
+        print("  [SKIP] %s" % reason)
 
     print()
     if failures:
