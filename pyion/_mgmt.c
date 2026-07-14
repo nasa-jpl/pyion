@@ -204,13 +204,13 @@ static PyObject *pyion_bp_endpoint_exists(PyObject *self, PyObject *args) {
     if (elt) goto found; else goto not_found;
 
 found:
-    restoreEidString(&metaEid);
+    clearMetaEid(&metaEid);
     Py_RETURN_TRUE;
 not_found:
-    restoreEidString(&metaEid);
+    clearMetaEid(&metaEid);
     Py_RETURN_FALSE;
 error:
-    restoreEidString(&metaEid);
+    clearMetaEid(&metaEid);
     return NULL;
 }
 
