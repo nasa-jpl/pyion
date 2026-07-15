@@ -87,28 +87,36 @@ def in_ion_folder(func):
     """
     @wraps(func)
     def wrapper(self, *args, **kwargs):
-        with ion_dir_lock:
-            # Get the node's directory
-            node_dir = getattr(self, 'node_dir')
+        # Get the node's directory
+        node_dir = getattr(self, 'node_dir')
 
-            # If no directory specified, just run. This is always the case
-            # unless you run multiple ION nodes in a single machine.
-            if node_dir is None: return func(self, *args, **kwargs)
-        
+        # If no directory is specified, no os.chdir() happens, so there is no
+        # process-global state to protect and no reason to take the lock. This
+        # is always the case unless multiple ION nodes run in a single process.
+        #
+        # Taking ion_dir_lock here would be actively harmful: it would be held
+        # across the wrapped call, including blocking calls such as bp_receive,
+        # so the interrupt/timeout path -- proxy.bp_interrupt(), which is also
+        # decorated with in_ion_folder -- could never acquire it, deadlocking
+        # the very call meant to wake the blocked receiver.
+        if node_dir is None:
+            return func(self, *args, **kwargs)
+
+        # Multiple nodes in one process: os.chdir() mutates the process-global
+        # working directory, so serialize the switch-run-restore sequence
+        # against other directory-sensitive calls.
+        with ion_dir_lock:
             # Store current working directory
             cur_dir = os.getcwd()
 
             # Go to the node's directory
             os.chdir(str(node_dir.absolute()))
 
-            # Execture function
+            # Execute function, restoring the working directory afterwards
             try:
-                ret = func(self, *args, **kwargs)
+                return func(self, *args, **kwargs)
             finally:
-                # Go back to the previous working directory
                 os.chdir(cur_dir)
-
-            return ret
     return wrapper
 
 def _chk_attached(func):
