@@ -482,7 +482,6 @@ int base_bp_open(BpSapState **state_ref, char *ownEid, int detained, int mem_ctr
            bundleZco, &newBundle*/
 int base_bp_send(unsigned long handle, BpTx *txInfo)
 {
-    char err_msg[150];
     Object newBundle;
     Sdr sdr = NULL;
     Object bundleZco;
@@ -505,10 +504,19 @@ int base_bp_send(unsigned long handle, BpTx *txInfo)
     // Initialize variables
     sdr = bp_get_sdr();
 
-    // Insert data to SDR
-    SDR_BEGIN_XN
+    // Insert data to SDR. On SDR failure go through the single cleanup path
+    // (done:) rather than returning here -- an early return would leak the
+    // held send_lock (wedging all future sends on this endpoint) and the
+    // endpoint refcount (the state would never be freed).
+    if (!sdr_begin_xn(sdr)) {
+        result = PYION_SDR_ERR;
+        goto done;
+    }
     bundleSdr = sdr_insert(sdr, txInfo->data, (size_t)txInfo->data_size);
-    SDR_END_XN
+    if (sdr_end_xn(sdr) < 0) {
+        result = PYION_SDR_ERR;
+        goto done;
+    }
 
     // Create ZCO and send
     bundleZco = ionCreateZco(ZcoSdrSource, bundleSdr, 0, txInfo->data_size,
