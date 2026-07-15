@@ -215,8 +215,14 @@ int base_ltp_send(unsigned long handle, LtpTxPayload *msg) {
 
     sdr = getIonsdr();
 
-    // Start SDR transaction
-    SDR_BEGIN_XN
+    // Start SDR transaction. On SDR failure go through the single cleanup
+    // path (done:) rather than returning here -- an early return would leak
+    // the held send_lock (wedging all future sends on this SAP) and the SAP
+    // refcount (the state would never be freed).
+    if (!sdr_begin_xn(sdr)) {
+        ok = PYION_SDR_ERR;
+        goto done;
+    }
 
     // Allocate SDR memory
     extent = sdr_insert(sdr, msg->data, (size_t)msg->data_size);
@@ -228,7 +234,10 @@ int base_ltp_send(unsigned long handle, LtpTxPayload *msg) {
     }
 
     // End SDR transaction
-    SDR_END_XN
+    if (sdr_end_xn(sdr) < 0) {
+        ok = PYION_SDR_ERR;
+        goto done;
+    }
 
     // Create ZCO object (not blocking because there is no attendant)
     item = ionCreateZco(ZcoSdrSource, extent, 0, msg->data_size,
@@ -256,7 +265,6 @@ done:
 
 int base_ltp_receive_data(unsigned long handle, LtpRxPayload *payloadObj) {
     // Define variables
-    char           err_msg[150]; // referenced by the SDR_*_XN macros
     ZcoReader      reader;
     Sdr            sdr;
     LtpNoticeType  type;
@@ -350,10 +358,19 @@ int base_ltp_receive_data(unsigned long handle, LtpRxPayload *payloadObj) {
     // Get ION SDR
     sdr = getIonsdr();
 
-    // Get content data size
-    SDR_BEGIN_XN
+    // Get content data size. On SDR failure route through done: rather than
+    // returning from the macro -- an early return would bypass the receiver-
+    // slot reset and refcount drop below, leaving the SAP permanently BUSY
+    // and never freed.
+    if (!sdr_begin_xn(sdr)) {
+        result = PYION_SDR_ERR;
+        goto done;
+    }
     data_size = zco_source_data_length(sdr, data);
-    SDR_END_XN
+    if (sdr_end_xn(sdr) < 0) {
+        result = PYION_SDR_ERR;
+        goto done;
+    }
 
     do_malloc = 1;
     payloadObj->payload = (char *)malloc(data_size);
@@ -362,9 +379,17 @@ int base_ltp_receive_data(unsigned long handle, LtpRxPayload *payloadObj) {
     zco_start_receiving(data, &reader);
 
     // Get block data
-    SDR_BEGIN_XN
+    if (!sdr_begin_xn(sdr)) {
+        free(payloadObj->payload);
+        result = PYION_SDR_ERR;
+        goto done;
+    }
     payloadObj->len = zco_receive_source(sdr, &reader, data_size, payloadObj->payload);
-    SDR_END_XN
+    if (sdr_end_xn(sdr) < 0) {
+        free(payloadObj->payload);
+        result = PYION_SDR_ERR;
+        goto done;
+    }
 
     // Handle error while getting the payload
     if (payloadObj->len < 0) {
