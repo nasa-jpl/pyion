@@ -14,7 +14,7 @@
 from unittest.mock import Mock
 import os
 from pathlib import Path
-from threading import Thread
+from threading import Thread, Lock
 from warnings import warn
 
 # Module imports
@@ -83,6 +83,9 @@ class Endpoint():
 		self.tx_result = None
 		self.rx_result = None
 
+		# Lock to serialize access to the SAP
+		self._lock = Lock()
+
 	def __del__(self):
 		# Attempt to close prior to deleting
 		self.close()
@@ -119,42 +122,44 @@ class Endpoint():
 			:param data: Data to send as ``bytes``, ``bytearray`` or a ``memoryview``
 			:param **kwargs: See ``Proxy.bp_open``
 		"""
-		# Get default values if necessary
-		if TTL is None: TTL = self.TTL
-		if priority is None: priority = self.priority
-		if report_eid is None: report_eid = self.report_eid
-		if custody is None: custody = self.custody
-		if report_flags is None: report_flags = self.report_flags
-		if ack_req is None: ack_req = self.ack_req
-		if retx_timer is None: retx_timer = self.retx_timer
-		if chunk_size is None: chunk_size = self.chunk_size
+		with self._lock:
+			# Get default values if necessary
+			if TTL is None: TTL = self.TTL
+			if priority is None: priority = self.priority
+			if report_eid is None: report_eid = self.report_eid
+			if custody is None: custody = self.custody
+			if report_flags is None: report_flags = self.report_flags
+			if ack_req is None: ack_req = self.ack_req
+			if retx_timer is None: retx_timer = self.retx_timer
+			if chunk_size is None: chunk_size = self.chunk_size
 
-		# If this endpoint is not detained, you cannot use a retx_timer
-		if retx_timer>0 and is_bpv6 and not self.detained:
-			raise ConnectionError('This endpoint is not detained. You cannot set up custodial timers.')
+			# If this endpoint is not detained, you cannot use a retx_timer
+			if retx_timer>0 and is_bpv6 and not self.detained:
+				raise ConnectionError('This endpoint is not detained. You cannot set up custodial timers.')
 
-		# If using BPv7, custody transfer is not defined
-		if is_bpv7 and custody != BpCustodyEnum.NO_CUSTODY_REQUESTED:
-			raise ValueError('Custody transfer is not allowed in pyion-4.0.0+ since it is not available in BPv7')
+			# If using BPv7, custody transfer is not defined
+			if is_bpv7 and custody != BpCustodyEnum.NO_CUSTODY_REQUESTED:
+				raise ValueError('Custody transfer is not allowed in pyion-4.0.0+ since it is not available in BPv7')
 
-		# Reset of transmit result result
-		self.tx_result = None
 
-		# Create call arguments
-		args = (dest_eid, data, TTL, priority, report_eid, custody, report_flags,
-				ack_req, retx_timer, chunk_size)
+			# Reset of transmit result result
+			self.tx_result = None
 
-		# Open another thread because otherwise you cannot handle a SIGINT if blocked
-		# waiting for ZCO space
-		th = Thread(target=self._bp_send, args=args, daemon=True)
-		th.start()
+			# Create call arguments
+			args = (dest_eid, data, TTL, priority, report_eid, custody, report_flags,
+					ack_req, retx_timer, chunk_size)
 
-		# Wait for a bundle to be sent
-		th.join()
+			# Open another thread because otherwise you cannot handle a SIGINT if blocked
+			# waiting for ZCO space
+			th = Thread(target=self._bp_send, args=args, daemon=True)
+			th.start()
 
-		# If sending resulted in an exception, raise it
-		if isinstance(self.tx_result, BaseException):
-			raise self.tx_result
+			# Wait for a bundle to be sent
+			th.join()
+
+			# If sending resulted in an exception, raise it
+			if isinstance(self.tx_result, BaseException):
+				raise self.tx_result
 
 	def _bp_send(self, dest_eid, data, TTL, priority, report_eid, custody, report_flags,
 				ack_req, retx_timer, chunk_size):
@@ -176,7 +181,7 @@ class Endpoint():
 		# Create a memoryview object
 		memv = memoryview(data)
 
-		# Send data in chunks of chunk_size bytes
+		# Send data in chuncks of chunk_size bytes
 		# NOTE: If data is not a multiple of chunk_size, the memoryview
 		#  		object returns the correct end of the buffer.
 		for i in range(0, len(memv), chunk_size):
@@ -228,29 +233,30 @@ class Endpoint():
 									is a dictionary containing the bundle header information.
 									This value defaults to False. 
 		"""
-		# Get default values if necessary
-		if timeout is None: timeout = self.timeout
-		if return_headers is None: return_headers = self.return_headers
+		with self._lock:
+			# Get default values if necessary
+			if timeout is None: timeout = self.timeout
+			if return_headers is None: return_headers = self.return_headers
 
-		# Reset of receive result
-		self.rx_result = None
+			# Reset of receive result
+			self.rx_result = None
 
-		# Open another thread because otherwise you cannot handle a SIGINT
-		th = Thread(target=self._bp_receive, args=(return_headers,), daemon=True)
-		th.start()
+			# Open another thread because otherwise you cannot handle a SIGINT
+			th = Thread(target=self._bp_receive, args=(return_headers,), daemon=True)
+			th.start()
 
-		# Wait for a bundle to be delivered	and set a timeout. Upon timeout expiration
-		# if the thread is still alive, then reception via ION must be interrupted.
-		th.join(timeout)
-		if th.is_alive():
-			self._bp_receive_timeout()
-			return
+			# Wait for a bundle to be delivered	and set a timeout. Upon timeout expiration
+			# if the thread is still alive, then reception via ION must be interrupted.
+			th.join(timeout)
+			if th.is_alive():
+				self._bp_receive_timeout()
+				return
 
-		# If exception, raise it
-		if isinstance(self.rx_result, BaseException):
-			raise self.rx_result
+			# If exception, raise it
+			if isinstance(self.rx_result, BaseException):
+				raise self.rx_result
 
-		return self.rx_result
+			return self.rx_result
 
 	@utils.in_ion_folder
 	def _bp_receive(self, return_headers):
@@ -281,4 +287,3 @@ class Endpoint():
 
 	def __repr__(self):
 		return '<Endpoint: {} ({})>'.format(self.eid, self._sap_addr)
-
