@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         automake \
         autotools-dev \
         libtool \
+        pkg-config \
         python3 \
         python3-dev \
         python3-setuptools \
