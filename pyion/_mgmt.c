@@ -294,7 +294,7 @@ MGMT_WRAPPED(pyion_list_regions)
     // Define variables
     char err_msg[150];
     Sdr	sdr = getIonsdr();
-    Object	iondbObj;
+    SdrObject	iondbObj;
 	IonDB	iondb;
     int	i;
     PyObject *regions = PyList_New(0);

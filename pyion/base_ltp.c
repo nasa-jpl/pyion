@@ -202,8 +202,8 @@ int base_ltp_send(unsigned long handle, LtpTxPayload *msg) {
     Sdr        sdr;
     int        ok;
     int        err;
-    Object     extent;
-    Object     item = 0;
+    SdrObject     extent;
+    SdrObject     item = 0;
     LtpSAP    *state;
 
     state = endpoint_acquire(handle, &err);
@@ -244,7 +244,7 @@ int base_ltp_send(unsigned long handle, LtpTxPayload *msg) {
                         0, 0, ZcoOutbound, NULL);
 
     // Handle error while creating ZCO object
-    if (!item || item == (Object)ERROR) {
+    if (!item || item == (SdrObject)ERROR) {
         sprintf(err_msg, "ZCO object creation failed");
         ok = PYION_SDR_ERR;
         goto done;
@@ -273,7 +273,7 @@ int base_ltp_receive_data(unsigned long handle, LtpRxPayload *payloadObj) {
     unsigned char  reasonCode;
     unsigned int   dataOffset;
     unsigned int   dataLength;
-    Object         data;
+    SdrObject         data;
     int            receiving_block, notice, do_malloc;
     vast           data_size;
     int            err;

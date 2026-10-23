@@ -482,10 +482,10 @@ int base_bp_open(BpSapState **state_ref, char *ownEid, int detained, int mem_ctr
            bundleZco, &newBundle*/
 int base_bp_send(unsigned long handle, BpTx *txInfo)
 {
-    Object newBundle;
+    SdrObject newBundle;
     Sdr sdr = NULL;
-    Object bundleZco;
-    Object bundleSdr;
+    SdrObject bundleZco;
+    SdrObject bundleSdr;
     int ok;
     int result = 0;
     int err;
