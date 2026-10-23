@@ -35,6 +35,7 @@ import threading
 import _bp
 import _mgmt
 import _ltp
+import _cfdp
 
 # A C call that does not return within this many seconds is treated as a
 # deadlock (the operation itself wedged) or as a receiver that was never woken.
@@ -44,6 +45,17 @@ SETTLE = 1.0
 
 EID = "ipn:1.1"
 LTP_CLIENT = 4  # an LTP client id not used by BP/SDA/CFDP
+CFDP_ENTITY = 1  # the local node; CFDP ops may fail with no route, which the
+                 # lifecycle tests tolerate -- they exercise the handle layer.
+
+
+def cfdp_open_handle():
+    """Open a CFDP entity and return its opaque handle.
+
+    Args mirror _cfdp.cfdp_open(entityId, lifespan, classOfService, ordinal,
+    srrFlags, criticality).
+    """
+    return _cfdp.cfdp_open(CFDP_ENTITY, 86400, 0, 0, 0, 0)
 
 
 def call_in_thread(fn):
@@ -353,6 +365,169 @@ def test_ltp_stale_handle_rejected():
 
 
 # --------------------------------------------------------------------------
+# CFDP -- entity (params) lifecycle and global event handling
+# --------------------------------------------------------------------------
+# _cfdp holds the request-params block through an opaque, never-reused handle
+# resolved by a registry, with a refcount/deferred-free lifecycle and a
+# per-handle op_lock. The process-global cfdp_get_event / cfdp_interrupt take
+# no handle and are never lock-wrapped.
+
+def test_cfdp_stale_handle_rejected():
+    """Every _cfdp entry point rejects a closed handle instead of a UAF."""
+    h = cfdp_open_handle()
+    _cfdp.cfdp_close(h)
+
+    # Each of these resolves the (now freed) handle through the registry and
+    # must raise ValueError (PYION_INVALID_HANDLE_ERR), never touch freed memory.
+    checks = [
+        ("close",    lambda: _cfdp.cfdp_close(h)),
+        ("cancel",   lambda: _cfdp.cfdp_cancel(h)),
+        ("suspend",  lambda: _cfdp.cfdp_suspend(h)),
+        ("resume",   lambda: _cfdp.cfdp_resume(h)),
+        ("report",   lambda: _cfdp.cfdp_report(h)),
+        ("add_usr_msg", lambda: _cfdp.cfdp_add_usr_msg(h, "x")),
+        ("add_fs_req",  lambda: _cfdp.cfdp_add_filestore_request(h, 0, "a", "b")),
+        ("send",     lambda: _cfdp.cfdp_send(h, "/tmp/x", "/tmp/y", 0, 0, 0)),
+        ("request",  lambda: _cfdp.cfdp_request(h, "/tmp/x", "/tmp/y", 0, 0, 0)),
+    ]
+    for name, fn in checks:
+        try:
+            fn()
+        except ValueError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            raise AssertionError(
+                "cfdp_%s on a stale handle raised %r, expected ValueError"
+                % (name, exc))
+        raise AssertionError("cfdp_%s on a stale handle did not raise" % name)
+    print("    stale CFDP handle rejected by every entry point")
+
+
+def test_cfdp_concurrent_add_usr_msg_same_handle():
+    """Concurrent request-mutating ops on one handle are serialized (op_lock).
+
+    Many threads add user messages to the same entity at once; without the
+    per-handle op_lock the read-create-assign of params->msgsToUser and the
+    MetadataList mutation would race. Every call must succeed.
+    """
+    h = cfdp_open_handle()
+    errors = []
+    errlock = threading.Lock()
+
+    def worker():
+        try:
+            for _ in range(20):
+                _cfdp.cfdp_add_usr_msg(h, "msg")
+        except Exception as exc:  # noqa: BLE001
+            with errlock:
+                errors.append(exc)
+
+    run_threads(worker, 6, OP_TIMEOUT)
+    _cfdp.cfdp_close(h)
+    if errors:
+        raise AssertionError("concurrent add_usr_msg failed: %r" % errors[0])
+    print("    6 threads x 20 concurrent add_usr_msg completed")
+
+
+def test_cfdp_concurrent_open_close():
+    """Concurrent open+close of distinct handles stresses the registry.
+
+    Exercises registry register/unregister and the refcount deferred free from
+    many threads; a broken registry would crash or corrupt rather than run.
+    """
+    errors = []
+    errlock = threading.Lock()
+
+    def worker():
+        try:
+            for _ in range(10):
+                h = cfdp_open_handle()
+                _cfdp.cfdp_close(h)
+        except Exception as exc:  # noqa: BLE001
+            with errlock:
+                errors.append(exc)
+
+    run_threads(worker, 6, OP_TIMEOUT)
+    if errors:
+        raise AssertionError("concurrent open/close failed: %r" % errors[0])
+    print("    6 threads x 10 concurrent open/close completed")
+
+
+def test_cfdp_close_while_ops_in_flight():
+    """Closing a handle while ops run on it must defer the free, not UAF.
+
+    Workers hammer a shared handle; the main thread closes it mid-flight. An
+    in-flight op holds a refcount so the params block is freed only once it
+    returns (deferred free); an op that starts after the close is rejected
+    cleanly. Under AddressSanitizer a premature free would surface here.
+    """
+    h = cfdp_open_handle()
+    stop = threading.Event()
+    other = []
+    errlock = threading.Lock()
+
+    # Use cfdp_report as the in-flight op: it resolves the handle, takes the
+    # op_lock and calls into ION on the (empty) transaction id, so it drives
+    # the acquire/op_lock/release path without allocating SDR memory. On a live
+    # handle ION reports "no such transaction" (RuntimeError), which is fine --
+    # we are stressing the lifecycle, not the report itself; on a closed handle
+    # the registry rejects it with ValueError.
+    def worker():
+        while not stop.is_set():
+            try:
+                _cfdp.cfdp_report(h)
+            except ValueError:
+                return  # handle was closed; expected, stop
+            except RuntimeError:
+                pass    # no transaction to report; keep exercising the path
+            except Exception as exc:  # noqa: BLE001
+                with errlock:
+                    other.append(exc)
+                return
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(6)]
+    for t in threads:
+        t.start()
+    time.sleep(0.3)  # let the workers get in flight
+
+    _cfdp.cfdp_close(h)  # deferred free while ops are running
+    stop.set()
+
+    deadline = time.time() + OP_TIMEOUT
+    for t in threads:
+        t.join(max(0.0, deadline - time.time()))
+    if any(t.is_alive() for t in threads):
+        raise AssertionError("DEADLOCK: a CFDP worker did not finish")
+    if other:
+        raise AssertionError("unexpected error during close-in-flight: %r" % other[0])
+
+    # After close the handle is gone: a fresh op must be rejected, not a UAF.
+    try:
+        _cfdp.cfdp_report(h)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("op on closed CFDP handle did not raise")
+    print("    close during in-flight ops deferred the free; stale op rejected")
+
+
+def test_cfdp_interrupt_unblocks_next_event():
+    """cfdp_interrupt_events must wake a thread blocked in cfdp_next_event.
+
+    The event path is process-global and lock-free; interrupt must not
+    deadlock against it.
+    """
+    done, box = call_in_thread(lambda: _cfdp.cfdp_next_event())
+    time.sleep(SETTLE)
+    _cfdp.cfdp_interrupt_events()
+    if not done.wait(OP_TIMEOUT):
+        raise AssertionError("DEADLOCK: cfdp_next_event not woken by interrupt")
+    if "exc" in box:
+        raise AssertionError("cfdp_next_event raised after interrupt: %r" % box["exc"])
+    print("    cfdp_interrupt_events woke a blocked next_event")
+
+
+# --------------------------------------------------------------------------
 # Concurrent open of the same endpoint (requires the ION 4.2.0+ bp_open fix)
 # --------------------------------------------------------------------------
 
@@ -412,6 +587,11 @@ TESTS = [
     test_ltp_close_unblocks_receiver,
     test_ltp_interrupt_unblocks_receiver,
     test_ltp_stale_handle_rejected,
+    test_cfdp_stale_handle_rejected,
+    test_cfdp_concurrent_add_usr_msg_same_handle,
+    test_cfdp_concurrent_open_close,
+    test_cfdp_close_while_ops_in_flight,
+    test_cfdp_interrupt_unblocks_next_event,
     test_concurrent_open_same_endpoint,
 ]
 
@@ -428,6 +608,11 @@ def main():
         _ltp.ltp_attach()
     except Exception as exc:  # noqa: BLE001
         print("OVERALL STATUS: FAILED (could not attach to LTP: %s)" % exc)
+        return 1
+    try:
+        _cfdp.cfdp_attach()
+    except Exception as exc:  # noqa: BLE001
+        print("OVERALL STATUS: FAILED (could not attach to CFDP: %s)" % exc)
         return 1
 
     failures = 0
