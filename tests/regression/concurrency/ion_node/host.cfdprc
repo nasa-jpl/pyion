@@ -1,0 +1,11 @@
+# cfdpadmin: minimal single-node CFDP setup for the concurrency test.
+#
+# Initializes the CFDP engine (so cfdp_attach succeeds and the event
+# semaphore that cfdp_get_event / cfdp_interrupt use is live) and starts the
+# bputa UT task on the ipn:1.64/65 endpoints. The concurrency cases exercise
+# the _cfdp handle lifecycle (open/close/stale-handle/concurrent ops) and the
+# global event interrupt; they tolerate cfdp_put failing, so no remote entity
+# or convergence layer is required.
+1
+m discard 1
+s 'bputa'

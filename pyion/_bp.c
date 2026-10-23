@@ -126,33 +126,12 @@ static PyMethodDef module_methods[] = {
 };
 
 /* ============================================================================
- * === Define _bp as a Python module
+ * === Define _bp as a Python module (multi-phase initialization, PEP 489)
  * ============================================================================ */
 
-PyMODINIT_FUNC PyInit__bp(void)
+// Module execution slot: populate the module with constants.
+static int _bp_exec(PyObject *module)
 {
-    // Define variables
-    PyObject *module;
-
-    // Define module configuration parameters
-    static struct PyModuleDef moduledef = {
-        PyModuleDef_HEAD_INIT,
-        "_bp",
-        module_docstring,
-        -1,
-        module_methods,
-        NULL,
-        NULL,
-        NULL,
-        NULL};
-
-    // Create the module
-    module = PyModule_Create(&moduledef);
-
-    // If module creation failed, return error
-    if (!module)
-        return NULL;
-
     // Add constants to be used in Python interface
     PyModule_AddIntMacro(module, BP_BULK_PRIORITY);
     PyModule_AddIntMacro(module, BP_STD_PRIORITY);
@@ -169,7 +148,35 @@ PyMODINIT_FUNC PyInit__bp(void)
     PyModule_AddIntConstant(module, "SourceCustodyOptional", SourceCustodyOptional);
     PyModule_AddIntConstant(module, "SourceCustodyRequired", SourceCustodyRequired);
 
-    return module;
+    return 0;
+}
+
+static PyModuleDef_Slot _bp_slots[] = {
+    {Py_mod_exec, _bp_exec},
+#ifdef Py_mod_gil
+    // Declare this module safe to run without the GIL. The C layer is
+    // hardened for thread-safety (refcount-based endpoint lifecycle, per-SAP
+    // and global locks) and validated under free-threading and
+    // ThreadSanitizer. On pre-3.13 Python Py_mod_gil is undefined and the
+    // module remains GIL-required.
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
+    {0, NULL}};
+
+static struct PyModuleDef moduledef = {
+    PyModuleDef_HEAD_INIT,
+    "_bp",
+    module_docstring,
+    0, // m_size: multi-phase init requires >= 0
+    module_methods,
+    _bp_slots,
+    NULL,
+    NULL,
+    NULL};
+
+PyMODINIT_FUNC PyInit__bp(void)
+{
+    return PyModuleDef_Init(&moduledef);
 }
 
 /* ============================================================================
@@ -227,53 +234,54 @@ static PyObject *pyion_bp_open(PyObject *self, PyObject *args)
         return NULL;
 
     ok = base_bp_open(&state, ownEid, detained, mem_ctrl);
-    // Allocate memory for state and initialize to zeros
+
+    // Handle errors. On any failure base_bp_open leaves *state == NULL.
     if (ok == -1)
     {
         pyion_SetExc(PyExc_RuntimeError, "Cannot malloc for BP state.");
         return NULL;
     }
-
-    // Set memory contents to zeros
-
-    // Handle error while opening endpoint
     if (ok == -2)
     {
-        pyion_SetExc(PyExc_ConnectionError, "Cannot open endpoint '%s'. Is it defined in .bprc? Is it already in use?", ownEid);
+        pyion_SetExc(PyExc_RuntimeError, "Cannot initialize endpoint lock.");
         return NULL;
     }
-
     if (ok == -3)
     {
         pyion_SetExc(PyExc_RuntimeError, "Can't initialize memory attendant.");
         return NULL;
     }
+    if (ok < 0)
+    {
+        pyion_SetExc(PyExc_ConnectionError, "Cannot open endpoint '%s'. Is it defined in .bprc? Is it already in use?", ownEid);
+        return NULL;
+    }
 
-    // Return the memory address of the SAP for this endpoint as an unsined long
-    PyObject *ret = Py_BuildValue("k", state);
-    return ret;
+    // Return the endpoint's opaque handle as an unsigned long.
+    return Py_BuildValue("k", state->handle);
 }
 
 static PyObject *pyion_bp_close(PyObject *self, PyObject *args)
 {
     // Define variables
-    BpSapState *state;
+    unsigned long handle;
+    int status;
 
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
+    if (!PyArg_ParseTuple(args, "k", &handle))
         return NULL;
 
-    // If endpoint is in idle state, just close
-    if (state->status == EID_IDLE)
-    {
-        base_close_endpoint(state);
-        Py_RETURN_NONE;
-    }
+    // Request the close. base_bp_close wakes any blocked receiver and defers
+    // the actual free until no thread is using the state.
+    Py_BEGIN_ALLOW_THREADS
+    status = base_bp_close(handle);
+    Py_END_ALLOW_THREADS
 
-    // We assume that if you reach this point, you are always in
-    // running state.
-    state->status = EID_CLOSING;
-    bp_interrupt(state->sap);
+    if (status == PYION_INVALID_HANDLE_ERR)
+    {
+        pyion_SetExc(PyExc_ValueError, "Invalid or already-closed endpoint handle.");
+        return NULL;
+    }
 
     Py_RETURN_NONE;
 }
@@ -285,19 +293,18 @@ static PyObject *pyion_bp_close(PyObject *self, PyObject *args)
 static PyObject *pyion_bp_interrupt(PyObject *self, PyObject *args)
 {
     // Define variables
-    BpSapState *state;
+    unsigned long handle;
 
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "k", (unsigned long *)&state))
+    if (!PyArg_ParseTuple(args, "k", &handle))
         return NULL;
 
-    // If EID is not running, you do not need to interrupt
-    if (state->status != EID_RUNNING)
-        Py_RETURN_NONE;
-
-    // Mark that you have transitioned to interruping state
-    state->status = EID_INTERRUPTING;
-    base_bp_interrupt(state);
+    // base_bp_interrupt is a no-op unless the endpoint is currently receiving.
+    if (base_bp_interrupt(handle) == PYION_INVALID_HANDLE_ERR)
+    {
+        pyion_SetExc(PyExc_ValueError, "Invalid or already-closed endpoint handle.");
+        return NULL;
+    }
 
     Py_RETURN_NONE;
 }
@@ -318,12 +325,12 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
     unsigned int retxTimer;
     BpCustodySwitch custodySwitch;
     BpAncillaryData *ancillaryData = NULL;
-    BpSapState *state = NULL;
+    unsigned long handle;
     BpTx txInfo;
     int status; //return status of bp_send
 
-    // Parse input arguments. First one is SAP memory address for this endpoint
-    if (!PyArg_ParseTuple(args, "ksziiiiiIs#", (unsigned long *)&state, &destEid, &reportEid, &ttl,
+    // Parse input arguments. First one is the endpoint handle.
+    if (!PyArg_ParseTuple(args, "ksziiiiiIs#", &handle, &destEid, &reportEid, &ttl,
                           &classOfService, (int *)&custodySwitch, &rrFlags, &ackReq, &retxTimer,
                           &data, &data_size))
         return NULL;
@@ -344,7 +351,7 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
 
     // Release the GIL
     Py_BEGIN_ALLOW_THREADS
-    status = base_bp_send(state, &txInfo);
+    status = base_bp_send(handle, &txInfo);
     Py_END_ALLOW_THREADS
 
     switch (status)
@@ -358,6 +365,12 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
         return NULL;
     case PYION_IO_ERR:
         pyion_SetExc(PyExc_MemoryError, "ZCO object creation failed.");
+        return NULL;
+    case PYION_CONN_ABORTED_ERR:
+        pyion_SetExc(PyExc_ConnectionError, "Endpoint is closing.");
+        return NULL;
+    case PYION_INVALID_HANDLE_ERR:
+        pyion_SetExc(PyExc_ValueError, "Invalid or already-closed endpoint handle.");
         return NULL;
     case 3:
         pyion_SetExc(PyExc_RuntimeError, "Error while scheduling custodial retransmission (err code=%i).", 3);
@@ -375,7 +388,7 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
 static PyObject *pyion_bp_receive(PyObject *self, PyObject *args)
 {
     // Define variables
-    BpSapState *state;
+    unsigned long handle;
     PyObject *ret_payload;
     PyObject *ret_payload_metadata;
     PyObject *ret;
@@ -383,19 +396,16 @@ static PyObject *pyion_bp_receive(PyObject *self, PyObject *args)
     BpRx msg;
 
     int return_header = 0; // Don't return header by default
-    
+
     // Initialize output structure
     base_init_bp_rx_payload(&msg);
 
     // Parse the input tuple. Raises error automatically if not possible
-    if (!PyArg_ParseTuple(args, "ki", (unsigned long *)&state, &return_header))
+    if (!PyArg_ParseTuple(args, "ki", &handle, &return_header))
         return NULL;
 
-    // Mark as running
-    state->status = EID_RUNNING;
-
     Py_BEGIN_ALLOW_THREADS // Release the GIL
-    status = base_bp_receive_data(state, &msg);
+    status = base_bp_receive_data(handle, &msg);
     Py_END_ALLOW_THREADS
 
     // If an error occurred, free our memory to prevent a leak.
@@ -419,6 +429,12 @@ static PyObject *pyion_bp_receive(PyObject *self, PyObject *args)
         return NULL;
     case PYION_SDR_ERR:
         pyion_SetExc(PyExc_MemoryError, "SDR Failure");
+        return NULL;
+    case PYION_BUSY_ERR:
+        pyion_SetExc(PyExc_RuntimeError, "Another receive is already in progress on this endpoint.");
+        return NULL;
+    case PYION_INVALID_HANDLE_ERR:
+        pyion_SetExc(PyExc_ValueError, "Invalid or already-closed endpoint handle.");
         return NULL;
     }
 

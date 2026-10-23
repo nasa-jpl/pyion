@@ -17,6 +17,11 @@ from functools import wraps
 import os
 from pathlib import Path
 import time
+import threading
+
+# Global lock to ensure that only one thread changes the directory at a time
+# This is necessary because os.chdir() affects the entire process.
+ion_dir_lock = threading.Lock()
 
 import pyion
 
@@ -85,24 +90,33 @@ def in_ion_folder(func):
         # Get the node's directory
         node_dir = getattr(self, 'node_dir')
 
-        # If no directory specified, just run. This is always the case
-        # unless you run multiple ION nodes in a single machine.
-        if node_dir is None: return func(self, *args, **kwargs)
-    
-        # Store current working directory
-        cur_dir = os.getcwd()
+        # If no directory is specified, no os.chdir() happens, so there is no
+        # process-global state to protect and no reason to take the lock. This
+        # is always the case unless multiple ION nodes run in a single process.
+        #
+        # Taking ion_dir_lock here would be actively harmful: it would be held
+        # across the wrapped call, including blocking calls such as bp_receive,
+        # so the interrupt/timeout path -- proxy.bp_interrupt(), which is also
+        # decorated with in_ion_folder -- could never acquire it, deadlocking
+        # the very call meant to wake the blocked receiver.
+        if node_dir is None:
+            return func(self, *args, **kwargs)
 
-        # Go to the node's directory
-        os.chdir(str(node_dir.absolute()))
+        # Multiple nodes in one process: os.chdir() mutates the process-global
+        # working directory, so serialize the switch-run-restore sequence
+        # against other directory-sensitive calls.
+        with ion_dir_lock:
+            # Store current working directory
+            cur_dir = os.getcwd()
 
-        # Execture function
-        try:
-            ret = func(self, *args, **kwargs)
-        finally:
-            # Go back to the previous working directory
-            os.chdir(cur_dir)
+            # Go to the node's directory
+            os.chdir(str(node_dir.absolute()))
 
-        return ret
+            # Execute function, restoring the working directory afterwards
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                os.chdir(cur_dir)
     return wrapper
 
 def _chk_attached(func):

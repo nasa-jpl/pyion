@@ -1,0 +1,158 @@
+# Regression tests for pyion.
+#
+# Runs on GitHub-hosted (cloud) runners -- no self-hosted runner required.
+# Two jobs build a docker test image (ION-DTN + toolchain) and run the
+# C-layer concurrency regression suite against a real ION node:
+#   * c-layer-concurrency: stock CPython, normally and under ASan/UBSan.
+#   * free-threaded:       GIL-disabled CPython 3.13, normally and under TSan.
+name: Regression tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - v4.2.1-a.1
+  workflow_dispatch:
+
+jobs:
+  c-layer-concurrency:
+    name: C-layer concurrency (real ION)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Builds docker/Dockerfile (downloads and compiles ION-DTN). The ION
+      # build layer is cached in the GitHub Actions cache, so only the first
+      # run pays the full compile cost.
+      - name: Build pyion test image
+        uses: docker/build-push-action@v7
+        with:
+          context: docker
+          file: docker/Dockerfile
+          tags: pyion_bpv7:4.2.1a1
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --shm-size gives ION room for its shared memory; the default 64 MB is
+      # too close to ION's configured wmSize.
+      - name: Concurrency regression test
+        run: |
+          docker run --rm --shm-size=256m \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE":/home/ion-interface \
+            pyion_bpv7:4.2.1a1 bash -c '
+              set -e
+              cd /home/ion-interface
+              rm -rf build
+              python3 setup.py install >/tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+              bash tests/regression/concurrency/run_c_concurrency_test.sh
+            '
+
+      - name: Concurrency regression test (AddressSanitizer + UBSan)
+        run: |
+          docker run --rm --shm-size=256m \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE":/home/ion-interface \
+            pyion_bpv7:4.2.1a1 bash -c '
+              set -e
+              cd /home/ion-interface
+              rm -rf build
+              PYION_SANITIZE=address,undefined python3 setup.py install \
+                >/tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+              export PYION_ASAN_PRELOAD=$(gcc -print-file-name=libasan.so)
+              bash tests/regression/concurrency/run_c_concurrency_test.sh
+            '
+
+  free-threaded:
+    name: Free-threaded + ThreadSanitizer (real ION)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Builds docker/Dockerfile.freethreaded: ION-DTN plus a GIL-disabled
+      # CPython 3.13 compiled from source. A separate cache scope keeps this
+      # from colliding with the stock-CPython image cache.
+      - name: Build free-threaded test image
+        uses: docker/build-push-action@v7
+        with:
+          context: docker
+          file: docker/Dockerfile.freethreaded
+          tags: pyion_ft:4.2.1a1
+          load: true
+          cache-from: type=gha,scope=ft
+          cache-to: type=gha,mode=max,scope=ft
+
+      # No PYTHON_GIL override: all five extensions declare Py_MOD_GIL_NOT_USED,
+      # so importing the whole set must leave the GIL disabled on a free-threaded
+      # build. The assertion fails the job if that slot ever stops taking effect.
+      - name: Concurrency regression test (free-threaded)
+        run: |
+          docker run --rm --shm-size=256m \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE":/home/ion-interface \
+            pyion_ft:4.2.1a1 bash -c '
+              set -e
+              cd /home/ion-interface
+              rm -rf build
+              python3 setup.py install >/tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+              python3 -c "import _bp, _mgmt, _ltp, _cfdp, _mem, sys; assert not sys._is_gil_enabled(), \"GIL re-enabled despite Py_mod_gil slot\"; print(\"free-threading active: GIL disabled with all extensions imported\")"
+              bash tests/regression/concurrency/run_c_concurrency_test.sh
+            '
+
+      # ThreadSanitizer needs reduced mmap randomization entropy; the default
+      # on modern kernels is too high for libtsan. This is set on the runner
+      # host, which the (unprivileged) container then inherits.
+      - name: Lower ASLR entropy for ThreadSanitizer
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Concurrency regression test (free-threaded + ThreadSanitizer)
+        run: |
+          docker run --rm --shm-size=256m \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE":/home/ion-interface \
+            pyion_ft:4.2.1a1 bash -c '
+              set -e
+              cd /home/ion-interface
+              rm -rf build
+              PYION_SANITIZE=thread python3 setup.py install \
+                >/tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
+              export PYION_ASAN_PRELOAD=$(gcc -print-file-name=libtsan.so)
+              bash tests/regression/concurrency/run_c_concurrency_test.sh
+            '
+
+  python-layer:
+    name: Python-layer concurrency (mocked)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Exercises the Python-layer locks in pyion/utils.py and pyion/bp.py.
+      # The ION C extensions are mocked, so no ION install or build is needed;
+      # PYTHONPATH makes the in-tree pyion package importable and
+      # PYION_BP_VERSION satisfies pyion.bp's import-time check.
+      - name: Python-layer concurrency tests
+        env:
+          PYION_BP_VERSION: BPv7
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python3 tests/regression/concurrency/test_concurrency.py
+          python3 tests/regression/concurrency/test_dir_lock_deadlock.py

@@ -1,14 +1,15 @@
 /* ============================================================================
- * Extension module to interface ION's memory management functions and Python. 
+ * Extension module to interface ION's memory management functions and Python.
  * It is based on ION's ``sdrwatch`` and ``psmwatch`` utilities.
  *
  * Author: Marc Sanchez Net
  * Date:   8/12/2019
- * Copyright (c) 2019, California Institute of Technology ("Caltech").  
+ * Copyright (c) 2019, California Institute of Technology ("Caltech").
  * U.S. Government sponsorship acknowledged.
  * =========================================================================== */
 
 #include <Python.h>
+#include <pthread.h>
 
 #include "_utils.c"
 #include "base_mem.h"
@@ -39,29 +40,49 @@ static PyMethodDef module_methods[] = {
 };
 
 /* ============================================================================
- * === Define _mem as a Python module
+ * === Thread-safety
+ * ============================================================================
+ * _mem only performs read-only usage queries. sdr_dump reads the SDR usage
+ * summary inside an SDR transaction (ION-serialized), but psm_usage has no
+ * transaction, and both touch process-global ION state. A single module lock
+ * serializes the two entry points against each other so the module is safe to
+ * run without the GIL. The lock is short-held -- only around the ION query,
+ * not around the Python object building that follows it.
+ */
+static pthread_mutex_t mem_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* ============================================================================
+ * === Define _mem as a Python module (PEP 489 multi-phase init)
  * ============================================================================ */
 
+static int _mem_exec(PyObject *module) {
+    (void)module;
+    return 0;
+}
+
+static PyModuleDef_Slot _mem_slots[] = {
+    {Py_mod_exec, _mem_exec},
+#ifdef Py_mod_gil
+    // _mem's queries are serialized by mem_lock and (for the SDR) by an SDR
+    // transaction; declare the module safe without the GIL. On pre-3.13 Python
+    // Py_mod_gil is undefined and the module stays GIL-required.
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
+    {0, NULL}};
+
+static struct PyModuleDef moduledef = {
+    PyModuleDef_HEAD_INIT,
+    "_mem",
+    module_docstring,
+    0, // m_size: multi-phase init requires >= 0
+    module_methods,
+    _mem_slots,
+    NULL,
+    NULL,
+    NULL};
+
 PyMODINIT_FUNC PyInit__mem(void) {
-    // Define variables
-    PyObject *module;
-
-    // Define module configuration parameters
-    static struct PyModuleDef moduledef = {
-        PyModuleDef_HEAD_INIT,
-        "_mem",
-        module_docstring,
-        -1,
-        module_methods,
-        NULL,
-        NULL,
-        NULL,
-        NULL};
-
-    // Create the module
-    module = PyModule_Create(&moduledef);
-
-    return module;
+    return PyModuleDef_Init(&moduledef);
 }
 
 /* ============================================================================
@@ -85,11 +106,18 @@ static PyObject *pyion_sdr_dump(PyObject *self, PyObject *args) {
         return NULL;
     }
 
-    // Get the state of the SDR
-    // NOTE: sdr_usage needs to be in a transaction even though it is a read operation
-    if (!sdr_pybegin_xn(sdr)) return NULL;     
+    // Get the state of the SDR, serialized against other _mem calls. The
+    // usage summary is copied into a local, so the lock is released before the
+    // Python object building below.
+    // NOTE: sdr_usage needs to be in a transaction even though it is a read.
+    pthread_mutex_lock(&mem_lock);
+    if (!sdr_pybegin_xn(sdr)) {
+        pthread_mutex_unlock(&mem_lock);
+        return NULL;
+    }
     base_sdr_usage(sdr, &sdrUsage);
     sdr_pyexit_xn(sdr);
+    pthread_mutex_unlock(&mem_lock);
 
     // Get amount of data available in small pool [bytes]
     size_t sp_avail = sdrUsage.smallPoolFree;
@@ -150,15 +178,19 @@ static PyObject *pyion_psm_dump(PyObject *self, PyObject *args) {
     size_t          sp_blk_size = 0;
     size_t          lp_blk_size = WORD_SIZE;
 
-    // Attach to SDR
+    // Attach to PSM
     psm = getIonwm();
     if (psm == NULL) {
         pyion_SetExc(PyExc_MemoryError, "Cannot attach to ION's PSM.");
         return NULL;
     }
 
-    // Get the state of the PSM
+    // Get the state of the PSM, serialized against other _mem calls. psm_usage
+    // has no transaction of its own; the summary is copied into a local so the
+    // lock is released before the Python object building below.
+    pthread_mutex_lock(&mem_lock);
     base_psm_usage(psm, &psmUsage);
+    pthread_mutex_unlock(&mem_lock);
 
     // Get amount of data available in small pool [bytes]
     size_t sp_avail = psmUsage.smallPoolFree;
@@ -169,7 +201,7 @@ static PyObject *pyion_psm_dump(PyObject *self, PyObject *args) {
     size_t lp_avail = psmUsage.largePoolFree;
     size_t lp_used  = psmUsage.largePoolAllocated;
     size_t lp_total = psmUsage.largePoolSize;
-    
+
     // Head data, all in [bytes]
     size_t wm_size  = psmUsage.partitionSize;
     size_t wm_avail = psmUsage.unusedSize;

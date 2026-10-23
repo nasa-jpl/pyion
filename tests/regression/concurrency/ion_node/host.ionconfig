@@ -1,0 +1,9 @@
+# Minimal single-node ION configuration for the C-layer concurrency test.
+# SDR lives in RAM; no persistence is needed for a short-lived test node.
+
+wmKey 65281
+wmSize 50000000
+sdrName ion
+heapWords 500000
+configFlags 1
+pathName /tmp

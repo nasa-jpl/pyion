@@ -1,0 +1,4 @@
+# ionadmin: initialize node 1, start it, disable congestion forecast.
+1 1 host.ionconfig
+s
+m horizon +0

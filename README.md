@@ -5,12 +5,44 @@ This repository contains the source code of **pyion**, a Python extension for th
 Pyion follows the release schedule of ION and places the relevant codebase in separate branches
 (e.g., for ION-3.7.0, checkout branch v3.7.0).
 
+> **Note: free-threaded Python compatibility**
+>
+> This concerns only the *free-threaded* build of Python 3.13+ (`python3.13t`,
+> built with `--disable-gil`), a separate, opt-in build. Stock CPython keeps the
+> GIL and is unaffected.
+>
+> As of this release all five C extensions (`_bp`, `_mgmt`, `_ltp`, `_cfdp`,
+> `_mem`) and the Python layer (`pyion.bp` / `pyion.utils`) are hardened for
+> thread-safety -- opaque handle registries with refcount/deferred-free
+> lifecycles, per-handle and global locks -- and declare `Py_MOD_GIL_NOT_USED`.
+> Importing the full `pyion` package on a free-threaded build therefore leaves
+> the GIL disabled, and pyion's own C code is free of data races and
+> use-after-free there (verified against a real ION node under
+> AddressSanitizer/UBSan and, on a GIL-disabled build, ThreadSanitizer).
+>
+> Note that ION itself is the layer below pyion; pyion serializes its own use
+> of ION, but ION's own threading guarantees are out of pyion's scope.
+
 Pyion's documentation can be found at https://pyion.readthedocs.io/en/latest/.
 
 ION's official repository is now available at https://github.com/nasa-jpl/ION-DTN.
 
 ION's official documentation is available at https://nasa-jpl.github.io/ION-DTN/.
 
+Regression Testing
+------------------
+
+Pyion includes a suite of regression tests to verify thread-safety and concurrency handling. These tests are located in ``tests/regression/concurrency``.
+
+**Python-level Concurrency Test** (``test_concurrency.py``):
+Verifies that the Python-level locks (global directory lock and endpoint-level serialization) correctly prevent race conditions.
+
+To run:
+```bash
+export PYTHONPATH=$PYTHONPATH:.
+export PYION_BP_VERSION=BPv7
+python3 tests/regression/concurrency/test_concurrency.py
+```
 
 License Terms
 -------------

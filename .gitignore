@@ -39,3 +39,6 @@ tests/mem_tests/nodes/1/node.stdout/data/*
 tests/mem_tests/nodes/2/ion.log
 tests/mem_tests/nodes/2/node.stdout
 tests/mem_tests/nodes/2/node.stdout/data/*
+
+# ION log written by the C-layer concurrency regression test node
+tests/regression/concurrency/ion_node/ion.log

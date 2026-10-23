@@ -63,8 +63,8 @@ from setuptools import setup, Extension
 import sys
 from warnings import warn
 
-__version__ = '4.2.0b'
-__release__ = '4.2.0b'
+__version__ = '4.2.1a1'
+__release__ = '4.2.1a1'
 
 # ========================================================================================
 # ===  Helper definitions
@@ -77,6 +77,17 @@ class SetupWarning(UserWarning):
 README = (Path(__file__).parent / "README.md").read_text()
 
 # Enforce Python3
+# Inform when building on a free-threaded (GIL-disabled) Python 3.13+.
+if sys.version_info >= (3, 13):
+    import sysconfig
+    if sysconfig.get_config_var("Py_GIL_DISABLED"):
+        warn("\n" + "="*80 + "\n" +
+             "NOTE: Free-threading (GIL-disabled) Python detected.\n" +
+             "PYION's C extensions are hardened for thread-safety and declare\n" +
+             "Py_MOD_GIL_NOT_USED, so the package runs with the GIL disabled.\n" +
+             "ION itself (the layer below pyion) is outside pyion's scope.\n" +
+             "="*80 + "\n", SetupWarning)
+
 if sys.version_info.major < 3:
     raise EnvironmentError('pyion only works with Python3')
 
@@ -164,6 +175,22 @@ c_macros = [
     ('PYION_BP_VERSION', bp_version)
 ]
 
+# Optional sanitizer build. Set PYION_SANITIZE to a sanitizer list (e.g.
+# "address,undefined") to compile and link the C extensions with that
+# sanitizer. Used by the C-layer concurrency regression test to validate
+# memory safety (use-after-free, buffer overflow, undefined behavior).
+link_args = []
+_sanitize = os.environ.get('PYION_SANITIZE')
+if _sanitize:
+    _san_flags = [
+        '-fsanitize={}'.format(_sanitize),
+        '-fno-omit-frame-pointer',
+        '-fno-sanitize-recover=all',
+        '-g',
+    ]
+    compile_args += _san_flags
+    link_args    += _san_flags
+
 # ========================================================================================
 # === Define all pyion C Extensions
 # ========================================================================================
@@ -176,6 +203,7 @@ _mgmt = Extension(
     library_dirs=[str(ion_lib)],
     sources=['./pyion/_mgmt.c'],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 
@@ -191,6 +219,7 @@ _bp = Extension(
         './pyion/base_bp.c'
     ],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 
@@ -202,6 +231,7 @@ _cfdp = Extension(
     library_dirs=[str(ion_lib), str(cfdp_lib)],
     sources=['./pyion/_cfdp.c', './pyion/base_cfdp.c'],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 
@@ -214,6 +244,7 @@ _ltp = Extension(
     sources=['./pyion/_ltp.c',
     './pyion/_utils.c', './pyion/base_ltp.c'],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 
@@ -225,6 +256,7 @@ _mem = Extension(
     library_dirs=[str(ion_lib)],
     sources=['./pyion/_mem.c', './pyion/base_mem.c'],
     extra_compile_args=compile_args,
+    extra_link_args=link_args,
     define_macros=c_macros
 )
 

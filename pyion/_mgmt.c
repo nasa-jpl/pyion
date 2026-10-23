@@ -18,6 +18,7 @@
 
 // Other includes
 #include <stdio.h>
+#include <pthread.h>
 #include <Python.h>
 #include "_utils.c"
 #include "macros.h"
@@ -34,6 +35,32 @@ static char *py_range_def   = "{s:K, s:K, s:s, s:s, s:I}";
 
 // LTP span is a dict
 static char *py_span_def = "{s:K, s:I, s:I, s:I, s:I, s:I, s:s, s:i, s:i, s:I, s:i}";
+
+/* ============================================================================
+ * === _mgmt serialization
+ * ============================================================================
+ * ION's volatile database (the red-black-tree iterations below, the vdb, the
+ * contact/range plan) is not protected by SDR transactions, so concurrent
+ * _mgmt calls must not run in parallel.
+ *
+ * MGMT_WRAPPED(name) generates a thin wrapper that holds mgmt_lock for the
+ * whole call and forwards to name##_impl. The lock is therefore acquired and
+ * released exactly once per entry point, regardless of how many return paths
+ * the body has -- no per-return unlock to forget.
+ */
+static pthread_mutex_t mgmt_lock = PTHREAD_MUTEX_INITIALIZER;
+
+#define MGMT_WRAPPED(name)                                       \
+    static PyObject *name##_impl(PyObject *self, PyObject *args); \
+    static PyObject *name(PyObject *self, PyObject *args)         \
+    {                                                            \
+        PyObject *ret;                                           \
+        pthread_mutex_lock(&mgmt_lock);                          \
+        ret = name##_impl(self, args);                           \
+        pthread_mutex_unlock(&mgmt_lock);                        \
+        return ret;                                              \
+    }                                                            \
+    static PyObject *name##_impl(PyObject *self, PyObject *args)
 
 /* ============================================================================
  * === _mgmt module definitions
@@ -105,39 +132,47 @@ static PyMethodDef module_methods[] = {
 };
 
 /* ============================================================================
- * === Define _mgmt as a Python module
+ * === Define _mgmt as a Python module (multi-phase initialization, PEP 489)
  * ============================================================================ */
 
+// Module execution slot: _mgmt has no constants to register.
+static int _mgmt_exec(PyObject *module) {
+    (void)module;
+    return 0;
+}
+
+static PyModuleDef_Slot _mgmt_slots[] = {
+    {Py_mod_exec, _mgmt_exec},
+#ifdef Py_mod_gil
+    // Declare this module safe to run without the GIL. All _mgmt entry points
+    // are serialized by mgmt_lock and validated under free-threading and
+    // ThreadSanitizer. On pre-3.13 Python Py_mod_gil is undefined and the
+    // module remains GIL-required.
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
+    {0, NULL}};
+
+static struct PyModuleDef moduledef = {
+    PyModuleDef_HEAD_INIT,
+    "_mgmt",
+    module_docstring,
+    0, // m_size: multi-phase init requires >= 0
+    module_methods,
+    _mgmt_slots,
+    NULL,
+    NULL,
+    NULL};
+
 PyMODINIT_FUNC PyInit__mgmt(void) {
-    // Define variables
-    PyObject *module;
-
-    // Define module configuration parameters
-    static struct PyModuleDef moduledef = {
-        PyModuleDef_HEAD_INIT,
-        "_mgmt",
-        module_docstring,
-        -1,
-        module_methods,
-        NULL,
-        NULL,
-        NULL,
-        NULL};
-
-    // Create the module
-    module = PyModule_Create(&moduledef);
-
-    // If module creation failed, return error
-    if (!module) return NULL;
-
-    return module;
+    return PyModuleDef_Init(&moduledef);
 }
 
 /* ============================================================================
  * === Watch configuration functions
  * ============================================================================ */
 
-static PyObject *pyion_bp_watch(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_bp_watch)
+{
     // Attach to ION
     if (!py_bp_attach()) return NULL;
     
@@ -168,7 +203,8 @@ static PyObject *pyion_bp_watch(PyObject *self, PyObject *args) {
  * === Endpoint configuration functions
  * ============================================================================ */
 
-static PyObject *pyion_bp_endpoint_exists(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_bp_endpoint_exists)
+{
     // Attach to ION
     if (!py_bp_attach()) return NULL;
 
@@ -214,7 +250,8 @@ error:
     return NULL;
 }
 
-static PyObject *pyion_bp_add_endpoint(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_bp_add_endpoint)
+{
     // Attach to ION
     if (!py_bp_attach()) return NULL;
 
@@ -249,14 +286,15 @@ static PyObject *pyion_bp_add_endpoint(PyObject *self, PyObject *args) {
  * === Region functions
  * ============================================================================ */
 
-static PyObject *pyion_list_regions(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_list_regions)
+{
     // Attach to ION
     if (!py_ion_attach()) return NULL;
 
     // Define variables
     char err_msg[150];
     Sdr	sdr = getIonsdr();
-    Object	iondbObj;
+    SdrObject	iondbObj;
 	IonDB	iondb;
     int	i;
     PyObject *regions = PyList_New(0);
@@ -268,15 +306,24 @@ static PyObject *pyion_list_regions(PyObject *self, PyObject *args) {
         return NULL;
     }
 
-    // Get data from the SDR
+    // Get data from the SDR. The transaction runs with the GIL released, so
+    // its outcome is captured in a plain int and any exception is raised only
+    // after Py_END_ALLOW_THREADS, when the GIL is held again. Returning from
+    // inside the block (as the original code did) would also leave the saved
+    // thread state dangling.
+    int xn_ok;
     Py_BEGIN_ALLOW_THREADS
-    if (!sdr_begin_xn(sdr)) {
+    xn_ok = sdr_begin_xn(sdr);
+    if (xn_ok) {
+        sdr_read(sdr, (char *) &iondb, iondbObj, sizeof(IonDB));
+        sdr_exit_xn(sdr);
+    }
+    Py_END_ALLOW_THREADS
+
+    if (!xn_ok) {
         pyion_SetExc(PyExc_RuntimeError, "Cannot start SDR transaction.");
         return NULL;
     }
-    sdr_read(sdr, (char *) &iondb, iondbObj, sizeof(IonDB));
-    sdr_exit_xn(sdr);
-    Py_END_ALLOW_THREADS
 
     // Build output list
     for (i = 0; i < 2; i++) {
@@ -292,7 +339,8 @@ static PyObject *pyion_list_regions(PyObject *self, PyObject *args) {
  * === Contact plan functions
  * ============================================================================ */
 
-static PyObject *pyion_list_contacts(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_list_contacts)
+{
     // Attach to ION
     if (!py_ion_attach()) return NULL;
 
@@ -340,7 +388,8 @@ static PyObject *pyion_list_contacts(PyObject *self, PyObject *args) {
     return py_contacts;
 }
 
-static PyObject *pyion_list_ranges(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_list_ranges)
+{
     // Attach to ION
     if (!py_ion_attach()) return NULL;
 
@@ -386,7 +435,8 @@ static PyObject *pyion_list_ranges(PyObject *self, PyObject *args) {
     return py_ranges;
 }
 
-static PyObject *pyion_add_contact(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_add_contact)
+{
     // Attach to ION
     if (!py_ion_attach()) return NULL;
 
@@ -432,7 +482,8 @@ static PyObject *pyion_add_contact(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-static PyObject *pyion_add_range(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_add_range)
+{
     // Attach to ION
     if (!py_ion_attach()) return NULL;
 
@@ -470,7 +521,8 @@ static PyObject *pyion_add_range(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-static PyObject *pyion_delete_contact(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_delete_contact)
+{
     // Attach to ION
     if (!py_ion_attach()) return NULL;
 
@@ -505,7 +557,8 @@ static PyObject *pyion_delete_contact(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-static PyObject *pyion_delete_range(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_delete_range)
+{
     // Attach to ION
     if (!py_ion_attach()) return NULL;
 
@@ -563,7 +616,8 @@ static int _find_span(uvast engineNbr, PsmAddress *elt) {
     return 1;
 }
 
-static PyObject *pyion_ltp_span_exists(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_ltp_span_exists)
+{
     // Attach to ION
     if (!py_ltp_attach()) return NULL;
 
@@ -588,7 +642,8 @@ not_found:
     Py_RETURN_FALSE;
 }
 
-static PyObject *pyion_find_span(PyObject *self, PyObject *args) {
+MGMT_WRAPPED(pyion_find_span)
+{
     unsigned long long remoteEngineId;
 
     if (!PyArg_ParseTuple(args, "K", &remoteEngineId)) {

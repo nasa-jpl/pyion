@@ -106,7 +106,7 @@ that this file assumes that ION and pyion 4.1.3 are being installed. It is provi
 	
 	# Set environment variables.
 	ENV HOME /home
-	ENV ION_HOME /home/ion-open-source-4.1.3
+	ENV ION_HOME /home/ion-open-source-4.2.1-a.1
 	ENV PYION_HOME /home/pyion-4.1.3
 	ENV PYION_BP_VERSION BPv7
 	
@@ -141,7 +141,7 @@ that this file assumes that ION and pyion 4.1.3 are being installed. It is provi
 	# === DOWNLOAD, COMPILE AND BUILD ION
 	# =============================================================
 	
-	RUN git clone --single-branch --branch ion-open-source-4.1.3 https://github.com/nasa-jpl/ION-DTN.git $ION_HOME
+	RUN git clone --single-branch --branch ion-open-source-4.2.1-a.1 https://github.com/nasa-jpl/ION-DTN.git $ION_HOME
 	
 	RUN \
 	    cd $ION_HOME && \
@@ -175,7 +175,7 @@ To use this dockerfile in a host with Docker, simply run:
 .. code-block:: bash
     :linenos:
 
-    docker build -t pyion_bpv7:4.1.3 -f .\pyion_v413_bpv7.dockerfile --build-arg IMAGE_NAME=ubuntu:20.04 .
+    docker build -t pyion_bpv7:4.2.1-a.1 -f .\pyion_v413_bpv7.dockerfile --build-arg IMAGE_NAME=ubuntu:20.04 .
 
 
 Note that to install pyion, three environment variables are used:

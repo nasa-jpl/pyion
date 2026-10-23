@@ -1,0 +1,90 @@
+# Portable two-node ION regression network for pyion (Linux / WSL2 / macOS).
+#
+# This is a generalized, host-independent counterpart to Marc Sanchez's
+# per-directory tests/<proto>_tests/test_network.yaml files, which are left
+# untouched. It reuses the exact same test assets (node configs, start,
+# tx.py/rx.py) and selects which protocol to run with the PYION_TEST variable.
+#
+# Quick start (from the repo root):
+#   PYION_TEST=bp docker compose -f docker/compose.yaml up --build
+# or use the helper:
+#   docker/run.sh bp        # bp | cfdp | ltp | mem
+#
+# Then, in two more shells, drive the test (receiver first):
+#   docker exec -it pyion_node2 bash -lc 'cd /work/bp_tests && python3 rx.py'
+#   docker exec -it pyion_node1 bash -lc 'cd /work/bp_tests && python3 tx.py'
+#
+# Tear down with:  docker compose -f docker/compose.yaml down
+#
+# Note: the test is run from a container-internal copy of the test dir
+# (/work/<proto>_tests), NOT the mounted repo, so ION's runtime writes and
+# the scripts' chmod never dirty your working tree. pyion is still built from
+# the mounted working copy.
+name: pyion-tests
+
+x-node: &node
+  build:
+    context: .
+    dockerfile: Dockerfile.functional
+  image: pyion-test:4.2.1a1
+  working_dir: /home/ion-interface
+  environment:
+    - PYION_BP_VERSION=BPv7
+  # Mount the repo (one level up from this file) read-write so the container
+  # builds pyion from your working copy and writes node logs back to tests/.
+  volumes:
+    - ..:/home/ion-interface
+  privileged: true
+  stdin_open: true
+  tty: true
+
+services:
+  node1:
+    <<: *node
+    container_name: pyion_node1
+    hostname: pyion_node1
+    networks:
+      ion_net:
+        ipv4_address: 196.128.0.101
+    command: >-
+      bash -c "
+        python3 setup.py clean --all install &&
+        rm -rf /work && mkdir -p /work &&
+        cp -a tests/${PYION_TEST:-bp}_tests /work/ &&
+        cd /work/${PYION_TEST:-bp}_tests &&
+        rm -f nodes/ion_nodes nodes/*/ion.log nodes/*/node.stdout &&
+        chmod -R +x . &&
+        ./start 1 &&
+        echo '--- node 1 up (running under /work; repo tree untouched) ---' &&
+        tail -f nodes/1/node.stdout
+      "
+
+  node2:
+    <<: *node
+    container_name: pyion_node2
+    hostname: pyion_node2
+    networks:
+      ion_net:
+        ipv4_address: 196.128.0.102
+    command: >-
+      bash -c "
+        sleep 6 &&
+        python3 setup.py clean --all install &&
+        rm -rf /work && mkdir -p /work &&
+        cp -a tests/${PYION_TEST:-bp}_tests /work/ &&
+        cd /work/${PYION_TEST:-bp}_tests &&
+        rm -f nodes/ion_nodes nodes/*/ion.log nodes/*/node.stdout &&
+        chmod -R +x . &&
+        ./start 2 &&
+        echo '--- node 2 up (running under /work; repo tree untouched) ---' &&
+        tail -f nodes/2/node.stdout
+      "
+
+networks:
+  ion_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.enable_ipv6: 'false'
+    ipam:
+      config:
+        - subnet: 196.128.0.0/16

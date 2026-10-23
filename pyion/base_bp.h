@@ -2,6 +2,8 @@
 #define BASEBP_H
 
 #include <bp.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 #define MAX_PREALLOC_BUFFER 1024
 
@@ -21,13 +23,42 @@ typedef enum
 
 
 // A combination of a BpSAP object and a representation of its status.
-// The status only used during reception for now.
-typedef struct
+//
+// Thread-safety:
+//  - ``status`` holds SapStateEnum values but is declared atomic because it is
+//    read by a receiver thread (in its blocking loop) while being written by
+//    interrupt/close on other threads.
+//  - ``state_lock`` is a short-held mutex protecting the bookkeeping fields
+//    below. It is NEVER held across a blocking ION call.
+//  - ``refcount`` tracks how many threads are currently inside a C call on
+//    this state. The state is freed only when refcount drops to 0 after a
+//    close has been requested (deferred free), preventing use-after-free.
+//  - ``receivers`` enforces at most one concurrent bp_receive (0 or 1).
+//  - ``close_requested`` marks that a close is pending; once set, no new
+//    operation may acquire the state.
+//  - ``send_lock`` serializes bp_send on this endpoint. Unlike ``state_lock``
+//    it may be held across the (possibly blocking) send; it only stalls other
+//    senders on the same endpoint, never receive/interrupt/close.
+//  - ``handle`` is the opaque, never-reused integer the Python layer holds
+//    instead of a raw pointer. C entry points resolve it through a registry,
+//    so a stale handle (e.g. a double close) is rejected instead of
+//    dereferencing freed memory. ``registry_next`` links the registry.
+typedef struct BpSapState
 {
     BpSAP sap;
-    SapStateEnum status;
+    atomic_int status;
     int detained;
     ReqAttendant *attendant;
+
+    pthread_mutex_t state_lock;
+    int refcount;
+    int receivers;
+    int close_requested;
+
+    pthread_mutex_t send_lock;
+
+    unsigned long handle;
+    struct BpSapState *registry_next;
 } BpSapState;
 
 
@@ -91,14 +122,28 @@ int base_bp_attach();
  */
 void base_bp_detach();
 
-void base_close_endpoint(BpSapState *state);
+/** The functions below take an opaque endpoint ``handle`` (see BpSapState).
+ * The handle is resolved through a registry; an unknown handle yields
+ * PYION_INVALID_HANDLE_ERR rather than a use-after-free.
+ */
 
-int base_bp_interrupt(BpSapState *state);
+/**
+ * Request that an endpoint be closed. Marks the state as closing, wakes any
+ * blocked receiver, and frees the state once no thread is using it. A second
+ * close of the same handle is rejected with PYION_INVALID_HANDLE_ERR.
+ */
+int base_bp_close(unsigned long handle);
 
-int base_bp_receive_data(BpSapState *state, BpRx *msg);
+int base_bp_interrupt(unsigned long handle);
 
-int base_bp_send(BpSapState *state, BpTx *txInfo);
+int base_bp_receive_data(unsigned long handle, BpRx *msg);
 
+int base_bp_send(unsigned long handle, BpTx *txInfo);
+
+/**
+ * Open an endpoint. On success ``*state`` is set and registered, and its
+ * ``handle`` field holds the opaque handle to return to the caller.
+ */
 int base_bp_open(BpSapState **state, char *ownEid, int detained, int mem_ctrl);
 
 
