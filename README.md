@@ -7,13 +7,24 @@ Pyion follows the release schedule of ION and places the relevant codebase in se
 
 > **Note: free-threaded Python compatibility**
 >
-> This affects only the *free-threaded* build of Python 3.13+ (`python3.13t`,
-> built with `--disable-gil`), which is a separate, opt-in build. Stock CPython
-> 3.13+ keeps the GIL and is unaffected.
+> This concerns only the *free-threaded* build of Python 3.13+ (`python3.13t`,
+> built with `--disable-gil`), a separate, opt-in build. Stock CPython keeps the
+> GIL and is unaffected.
 >
-> **PYION is currently NOT fully thread-safe** without the GIL. If you are running
-> a free-threaded build, set the environment variable `PYTHON_GIL=1` (or pass
-> `-X gil=1`) to re-enable the GIL and avoid race conditions and potential crashes.
+> As of this release the `_bp`, `_mgmt` and `_ltp` C extensions (and the
+> Python layer in `pyion.bp` / `pyion.utils`) are hardened for thread-safety and
+> declare `Py_MOD_GIL_NOT_USED`, so they are safe to run without the GIL.
+>
+> The `_cfdp` and `_mem` extensions are **not** hardened yet and still require
+> the GIL (`_cfdp` also has a known open/close use-after-free). This is tracked
+> as a follow-up. Because importing any GIL-requiring extension re-enables the
+> GIL for the whole process, importing the **full** `pyion` package on a
+> free-threaded build re-enables the GIL.
+>
+> So: to run genuinely GIL-free today, import only the hardened modules
+> (`pyion.bp` / `pyion.ltp`, or the `_bp`/`_mgmt`/`_ltp` extensions directly).
+> Otherwise set `PYTHON_GIL=1` (or `-X gil=1`) to keep the GIL explicit and
+> avoid races or crashes in the un-hardened extensions.
 
 Pyion's documentation can be found at https://pyion.readthedocs.io/en/latest/.
 
