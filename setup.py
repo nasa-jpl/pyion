@@ -77,14 +77,15 @@ class SetupWarning(UserWarning):
 README = (Path(__file__).parent / "README.md").read_text()
 
 # Enforce Python3
-# Check for free-threading in Python 3.13+
+# Inform when building on a free-threaded (GIL-disabled) Python 3.13+.
 if sys.version_info >= (3, 13):
     import sysconfig
     if sysconfig.get_config_var("Py_GIL_DISABLED"):
         warn("\n" + "="*80 + "\n" +
-             "WARNING: Free-threading (GIL removal) detected.\n" +
-             "PYION is currently NOT fully thread-safe in this mode.\n" +
-             "It is highly recommended to enable the GIL by setting PYTHON_GIL=1.\n" +
+             "NOTE: Free-threading (GIL-disabled) Python detected.\n" +
+             "PYION's C extensions are hardened for thread-safety and declare\n" +
+             "Py_MOD_GIL_NOT_USED, so the package runs with the GIL disabled.\n" +
+             "ION itself (the layer below pyion) is outside pyion's scope.\n" +
              "="*80 + "\n", SetupWarning)
 
 if sys.version_info.major < 3:

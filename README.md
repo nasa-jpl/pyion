@@ -11,20 +11,17 @@ Pyion follows the release schedule of ION and places the relevant codebase in se
 > built with `--disable-gil`), a separate, opt-in build. Stock CPython keeps the
 > GIL and is unaffected.
 >
-> As of this release the `_bp`, `_mgmt` and `_ltp` C extensions (and the
-> Python layer in `pyion.bp` / `pyion.utils`) are hardened for thread-safety and
-> declare `Py_MOD_GIL_NOT_USED`, so they are safe to run without the GIL.
+> As of this release all five C extensions (`_bp`, `_mgmt`, `_ltp`, `_cfdp`,
+> `_mem`) and the Python layer (`pyion.bp` / `pyion.utils`) are hardened for
+> thread-safety -- opaque handle registries with refcount/deferred-free
+> lifecycles, per-handle and global locks -- and declare `Py_MOD_GIL_NOT_USED`.
+> Importing the full `pyion` package on a free-threaded build therefore leaves
+> the GIL disabled, and pyion's own C code is free of data races and
+> use-after-free there (verified against a real ION node under
+> AddressSanitizer/UBSan and, on a GIL-disabled build, ThreadSanitizer).
 >
-> The `_cfdp` and `_mem` extensions are **not** hardened yet and still require
-> the GIL (`_cfdp` also has a known open/close use-after-free). This is tracked
-> as a follow-up. Because importing any GIL-requiring extension re-enables the
-> GIL for the whole process, importing the **full** `pyion` package on a
-> free-threaded build re-enables the GIL.
->
-> So: to run genuinely GIL-free today, import only the hardened modules
-> (`pyion.bp` / `pyion.ltp`, or the `_bp`/`_mgmt`/`_ltp` extensions directly).
-> Otherwise set `PYTHON_GIL=1` (or `-X gil=1`) to keep the GIL explicit and
-> avoid races or crashes in the un-hardened extensions.
+> Note that ION itself is the layer below pyion; pyion serializes its own use
+> of ION, but ION's own threading guarantees are out of pyion's scope.
 
 Pyion's documentation can be found at https://pyion.readthedocs.io/en/latest/.
 

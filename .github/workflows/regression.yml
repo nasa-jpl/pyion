@@ -94,9 +94,9 @@ jobs:
           cache-from: type=gha,scope=ft
           cache-to: type=gha,mode=max,scope=ft
 
-      # No PYTHON_GIL override: _bp and _mgmt declare Py_MOD_GIL_NOT_USED, so
-      # importing them must leave the GIL disabled on a free-threaded build.
-      # The assertion fails the job if that slot ever stops taking effect.
+      # No PYTHON_GIL override: all five extensions declare Py_MOD_GIL_NOT_USED,
+      # so importing the whole set must leave the GIL disabled on a free-threaded
+      # build. The assertion fails the job if that slot ever stops taking effect.
       - name: Concurrency regression test (free-threaded)
         run: |
           docker run --rm --shm-size=256m \
@@ -107,7 +107,7 @@ jobs:
               cd /home/ion-interface
               rm -rf build
               python3 setup.py install >/tmp/build.log 2>&1 || { tail -30 /tmp/build.log; exit 1; }
-              python3 -c "import _bp, _mgmt, sys; assert not sys._is_gil_enabled(), \"GIL re-enabled despite Py_mod_gil slot\"; print(\"free-threading active: GIL disabled\")"
+              python3 -c "import _bp, _mgmt, _ltp, _cfdp, _mem, sys; assert not sys._is_gil_enabled(), \"GIL re-enabled despite Py_mod_gil slot\"; print(\"free-threading active: GIL disabled with all extensions imported\")"
               bash tests/regression/concurrency/run_c_concurrency_test.sh
             '
 
