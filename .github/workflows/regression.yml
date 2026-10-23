@@ -12,7 +12,7 @@ on:
   push:
     branches:
       - master
-      - v4.1.4-a.2
+      - v4.2.1-a.1
       - c-layer-thread-safety
   workflow_dispatch:
 
@@ -36,7 +36,7 @@ jobs:
         with:
           context: docker
           file: docker/Dockerfile
-          tags: pyion_bpv7:4.1.4a2
+          tags: pyion_bpv7:4.2.1a1
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -48,7 +48,7 @@ jobs:
           docker run --rm --shm-size=256m \
             -e PYTHONUNBUFFERED=1 \
             -v "$GITHUB_WORKSPACE":/home/ion-interface \
-            pyion_bpv7:4.1.4a2 bash -c '
+            pyion_bpv7:4.2.1a1 bash -c '
               set -e
               cd /home/ion-interface
               rm -rf build
@@ -61,7 +61,7 @@ jobs:
           docker run --rm --shm-size=256m \
             -e PYTHONUNBUFFERED=1 \
             -v "$GITHUB_WORKSPACE":/home/ion-interface \
-            pyion_bpv7:4.1.4a2 bash -c '
+            pyion_bpv7:4.2.1a1 bash -c '
               set -e
               cd /home/ion-interface
               rm -rf build
@@ -90,7 +90,7 @@ jobs:
         with:
           context: docker
           file: docker/Dockerfile.freethreaded
-          tags: pyion_ft:4.1.4a2
+          tags: pyion_ft:4.2.1a1
           load: true
           cache-from: type=gha,scope=ft
           cache-to: type=gha,mode=max,scope=ft
@@ -103,7 +103,7 @@ jobs:
           docker run --rm --shm-size=256m \
             -e PYTHONUNBUFFERED=1 \
             -v "$GITHUB_WORKSPACE":/home/ion-interface \
-            pyion_ft:4.1.4a2 bash -c '
+            pyion_ft:4.2.1a1 bash -c '
               set -e
               cd /home/ion-interface
               rm -rf build
@@ -123,7 +123,7 @@ jobs:
           docker run --rm --shm-size=256m \
             -e PYTHONUNBUFFERED=1 \
             -v "$GITHUB_WORKSPACE":/home/ion-interface \
-            pyion_ft:4.1.4a2 bash -c '
+            pyion_ft:4.2.1a1 bash -c '
               set -e
               cd /home/ion-interface
               rm -rf build

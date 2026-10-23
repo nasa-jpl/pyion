@@ -2,7 +2,7 @@
 
 `Dockerfile` builds an image that bundles ION-DTN and the build toolchain.
 It is the image the test compose files (`tests/*/test_network.yaml`) expect
-under the name `pyion_bpv7:4.1.4a2`.
+under the name `pyion_bpv7:4.2.1a1`.
 
 The image is **self-contained**: ION-DTN is downloaded from the official
 `nasa-jpl/ION-DTN` repository and built during the image build. No local ION
@@ -16,12 +16,12 @@ startup, so you can edit and rebuild pyion without rebuilding the image.
 
 ```bash
 # from the repository root
-docker build -t pyion_bpv7:4.1.4a2 -f docker/Dockerfile docker/
+docker build -t pyion_bpv7:4.2.1a1 -f docker/Dockerfile docker/
 ```
 
 The build downloads ION-DTN, compiles and installs its public API into
 `/usr/local`, and leaves the ION source tree at
-`/home/ion-open-source-4.1.4a2`. `setup.py` needs both: `/usr/local` for the
+`/home/ion-open-source-4.2.1a1`. `setup.py` needs both: `/usr/local` for the
 public headers/libraries and `ION_HOME` (the source tree) for ION's private
 headers.
 
@@ -62,14 +62,14 @@ used to validate pyion under free-threading and to run ThreadSanitizer (its
 Ubuntu 24.04 toolchain ships a libtsan that works with modern kernel ASLR).
 
 ```bash
-docker build -t pyion_ft:4.1.4a2 -f docker/Dockerfile.freethreaded docker/
+docker build -t pyion_ft:4.2.1a1 -f docker/Dockerfile.freethreaded docker/
 ```
 
 Run the concurrency suite under free-threading with `PYTHON_GIL=0`:
 
 ```bash
 docker run --rm --shm-size=256m -e PYTHON_GIL=0 \
-    -v "$PWD":/home/ion-interface pyion_ft:4.1.4a2 bash -c '
+    -v "$PWD":/home/ion-interface pyion_ft:4.2.1a1 bash -c '
         cd /home/ion-interface && python3 setup.py install &&
         bash tests/regression/concurrency/run_c_concurrency_test.sh'
 ```

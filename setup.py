@@ -63,8 +63,8 @@ from setuptools import setup, Extension
 import sys
 from warnings import warn
 
-__version__ = '4.2.0b'
-__release__ = '4.2.0b'
+__version__ = '4.2.1a1'
+__release__ = '4.2.1a1'
 
 # ========================================================================================
 # ===  Helper definitions

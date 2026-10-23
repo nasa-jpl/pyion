@@ -11,7 +11,7 @@
 #
 # Build
 # -----
-#   docker build -t pyion_bpv7:4.1.4a2 -f docker/Dockerfile docker/
+#   docker build -t pyion_bpv7:4.2.1a1 -f docker/Dockerfile docker/
 #
 # A different ION version (ION_TAG is the git tag in the ION-DTN repo;
 # ION_VERSION names the install directory and must match the ION_HOME in
@@ -24,8 +24,8 @@
 
 FROM ubuntu:22.04
 
-ARG ION_VERSION=4.1.4a2
-ARG ION_TAG=ion-open-source-4.1.4-a.2
+ARG ION_VERSION=4.2.1a1
+ARG ION_TAG=ion-open-source-4.2.1-a.1
 ARG ION_REPO=https://github.com/nasa-jpl/ION-DTN
 ENV DEBIAN_FRONTEND=noninteractive
 

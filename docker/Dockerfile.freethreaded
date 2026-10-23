@@ -11,13 +11,13 @@
 #
 # Build
 # -----
-#   docker build -t pyion_ft:4.1.4a2 -f docker/Dockerfile.freethreaded docker/
+#   docker build -t pyion_ft:4.2.1a1 -f docker/Dockerfile.freethreaded docker/
 # ======================================================================
 
 FROM ubuntu:24.04
 
-ARG ION_VERSION=4.1.4a2
-ARG ION_TAG=ion-open-source-4.1.4-a.2
+ARG ION_VERSION=4.2.1a1
+ARG ION_TAG=ion-open-source-4.2.1-a.1
 ARG ION_REPO=https://github.com/nasa-jpl/ION-DTN
 ARG CPYTHON_BRANCH=3.13
 ENV DEBIAN_FRONTEND=noninteractive
