@@ -353,20 +353,19 @@ def test_ltp_stale_handle_rejected():
 
 
 # --------------------------------------------------------------------------
-# Deferred -- waiting on an external dependency, not executed yet
+# Concurrent open of the same endpoint (requires the ION 4.2.0+ bp_open fix)
 # --------------------------------------------------------------------------
 
 def test_concurrent_open_same_endpoint():
     """Concurrent bp_open of the same endpoint from several threads.
 
-    DEFERRED to ION 4.2.0. ION 4.1.4-a.2's bp_open is not safe for a
-    concurrent open of the same endpoint; an ION 4.2.0 update is required
-    before this can pass. Until the test node moves to ION 4.2.0 this case
-    is listed in DEFERRED_TESTS and is not executed.
+    This was deferred on ION 4.1.4-a.2, whose bp_open is not safe for a
+    concurrent open of the same endpoint. ION 4.2.0 fixed that; verified
+    passing against ION 4.2.1-a.1, so the case is now active.
 
-    Expected behaviour once enabled: exactly one bp_open(EID) succeeds, the
-    others raise cleanly (endpoint already in use) with no crash, and the
-    winning handle can then be used and closed.
+    Exactly one bp_open(EID) succeeds, the others raise cleanly (endpoint
+    already in use) with no crash, and the winning handle can then be used
+    and closed.
     """
     n = 6
     results = []
@@ -394,14 +393,11 @@ def test_concurrent_open_same_endpoint():
     print("    one bp_open won; the rest were rejected cleanly")
 
 
-# Tests deferred until an external dependency lands. They are kept here,
-# version-controlled and visible, but are not executed -- main() reports them
-# as skipped. Move an entry into TESTS once its dependency is satisfied.
-DEFERRED_TESTS = [
-    (test_concurrent_open_same_endpoint,
-     "deferred to ION 4.2.0: concurrent bp_open of one endpoint is not safe "
-     "until the ION 4.2.0 update is complete"),
-]
+# Tests deferred until an external dependency lands: kept version-controlled
+# and visible but not executed (main() reports them as skipped). An entry
+# moves into TESTS once its dependency is satisfied. Currently empty -- the
+# concurrent-open case moved to TESTS once ION reached 4.2.0+.
+DEFERRED_TESTS = []
 
 
 TESTS = [
@@ -416,6 +412,7 @@ TESTS = [
     test_ltp_close_unblocks_receiver,
     test_ltp_interrupt_unblocks_receiver,
     test_ltp_stale_handle_rejected,
+    test_concurrent_open_same_endpoint,
 ]
 
 
