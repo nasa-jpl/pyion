@@ -23,6 +23,10 @@ import sphinx_bootstrap_theme
 # from the available docstrings.
 autodoc_mock_imports = ["_bp", "_ltp", "_cfdp", "_mem", "_mgmt"]
 
+# pyion.bp refuses to import without PYION_BP_VERSION, which would leave the
+# autodoc pages empty. Default it for the docs build only.
+os.environ.setdefault('PYION_BP_VERSION', 'BPv7')
+
 # -- Project information -----------------------------------------------------
 
 project = 'pyion'
@@ -33,7 +37,7 @@ author = 'Marc Sanchez Net'
 # |version| and |release|, also used in various other places throughout the
 # built documents.
 #
-version    = '4.1.3'
+version    = '4.2.1a1'
 release    = 'R2024a'
 rst_epilog = '.. |version| replace:: %s' % str(version)
 rst_epilog = '.. |release| replace:: %s' % str(release)
@@ -81,7 +85,7 @@ master_doc = 'index'
 #
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
-language = None
+language = 'en'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
@@ -225,7 +229,7 @@ texinfo_documents = [
 # -- Options for intersphinx extension ---------------------------------------
 
 # Example configuration for intersphinx: refer to the Python standard library.
-intersphinx_mapping = {'https://docs.python.org/': None}
+intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}
 
 # -- Options for todo extension ----------------------------------------------
 
