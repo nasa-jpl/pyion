@@ -616,10 +616,11 @@ static PyObject *pyion_cfdp_next_event(PyObject *self, PyObject *args) {
         }
 
         // Build the return value
-        return Py_BuildValue("(i, {s:K, s:K, s:s, s:s, s:O})",
+        return Py_BuildValue("(i, {s:K, s:K, s:K, s:s, s:s, s:O})",
                             (int)CfdpMetadataRecvInd,
                             "transaction_id", (unsigned long long)transaction_id,
                             "source_entity_id", (unsigned long long)source_entity_nbr,
+                            "file_size", (unsigned long long)fileSize,
                             "source_file_name", sourceFileNameBuf,
                             "dest_file_name", destFileNameBuf,
                             "user_messages", py_usrmsgs);
@@ -637,7 +638,15 @@ static PyObject *pyion_cfdp_next_event(PyObject *self, PyObject *args) {
     if (type == CfdpTransactionFinishedInd) {
         base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
 
+        // Expose the transaction-level results
+        PyDict_SetItemString(py_fs, "transaction_id", Py_BuildValue("K", (unsigned long long)transaction_id));
+        PyDict_SetItemString(py_fs, "status_report", Py_BuildValue("s", statusReportBuf));
+        PyDict_SetItemString(py_fs, "condition_code", Py_BuildValue("i", (int)condition));
+        PyDict_SetItemString(py_fs, "file_status", Py_BuildValue("i", (int)fileStatus));
+        PyDict_SetItemString(py_fs, "delivery_code", Py_BuildValue("i", (int)deliveryCode));
+
         // Get all filestore responses
+        PyObject* py_filestore_response_list = PyList_New(0);
         while (filestoreResponses) {
             // Get next response
             if (base_cfdp_get_fsresp(&filestoreResponses, &action, &status, firstPathName,
@@ -651,16 +660,18 @@ static PyObject *pyion_cfdp_next_event(PyObject *self, PyObject *args) {
             if (action == ((CfdpAction) -1))
                 continue;
 
-            // Build a value for this action
-            PyObject* py_res = PyDict_New();
-            PyDict_SetItemString(py_res, "status_report", Py_BuildValue("s", statusReportBuf));
-            PyDict_SetItemString(py_res, "condition_code", Py_BuildValue("i", (int)condition));
-            PyDict_SetItemString(py_res, "file_status", Py_BuildValue("i", (int)status));
-            PyDict_SetItemString(py_res, "delivery_code", Py_BuildValue("i", (int)deliveryCode));
-
-            // Store the result for this action
-            PyDict_SetItem(py_fs, Py_BuildValue("i", (int)action), py_res);
+            // Build a value for this filestore response
+            PyObject* py_filestore_response = PyDict_New();
+            PyDict_SetItemString(py_filestore_response, "action_code", Py_BuildValue("i", (int)action));
+            PyDict_SetItemString(py_filestore_response, "status_code", Py_BuildValue("i", (int)status));
+            PyDict_SetItemString(py_filestore_response, "first_file_name", Py_BuildValue("s", firstPathName));
+            PyDict_SetItemString(py_filestore_response, "second_file_name", Py_BuildValue("s", secondPathName));
+            PyDict_SetItemString(py_filestore_response, "filestore_message", Py_BuildValue("s", msgBuf));
+            PyList_Append(py_filestore_response_list, py_filestore_response);
         }
+
+        // Store the filestore responses
+        PyDict_SetItemString(py_fs, "filestore_responses", py_filestore_response_list);
 
         // Build return value
         return Py_BuildValue("(i, O)", (int)CfdpTransactionFinishedInd, py_fs);
