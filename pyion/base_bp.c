@@ -279,8 +279,10 @@ int help_receive_data(BpSapState *state, BpDelivery *dlv, BpRx *msg)
             break;
     }
 
-    // If you exited because of interruption
-    if (atomic_load(&(state->status)) == EID_INTERRUPTING)
+    // If you exited because of interruption. A bundle that was successfully
+    // dequeued just as the interrupt arrived takes precedence over the
+    // interrupt, so the payload is delivered rather than released undelivered.
+    if (atomic_load(&(state->status)) == EID_INTERRUPTING && dlv->result != BpPayloadPresent)
     {
         return PYION_INTERRUPTED_ERR;
     }
@@ -351,7 +353,10 @@ int help_receive_data(BpSapState *state, BpDelivery *dlv, BpRx *msg)
 
 int base_bp_receive_data(unsigned long handle, BpRx *msg)
 {
-    BpDelivery dlv;
+    // Zero-initialize so the cleanup-time bp_release_delivery never inspects an
+    // indeterminate delivery if the receive loop is skipped (e.g. an interrupt
+    // or close raced in before bp_receive could populate it).
+    BpDelivery dlv = {0};
     int status, err;
     BpSapState *state;
 

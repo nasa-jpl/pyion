@@ -67,7 +67,8 @@ int base_cfdp_add_fs_req(unsigned long handle, int action,
                          char *firstPathName, char *secondPathName);
 
 int base_cfdp_send(unsigned long handle, char *sourceFile, char *destFile,
-                   int closureLat, int segMetadata, long int mode);
+                   int closureLat, int segMetadata, long int mode,
+                   uvast *transactionNbr);
 
 int base_cfdp_request(unsigned long handle, char *sourceFile, char *destFile,
                       int closureLat, int segMetadata, long int mode);
