@@ -36,6 +36,7 @@ import _bp
 import _mgmt
 import _ltp
 import _cfdp
+import _mem
 
 # A C call that does not return within this many seconds is treated as a
 # deadlock (the operation itself wedged) or as a receiver that was never woken.
@@ -568,6 +569,103 @@ def test_concurrent_open_same_endpoint():
     print("    one bp_open won; the rest were rejected cleanly")
 
 
+# --------------------------------------------------------------------------
+# Outbound backpressure -- no SDR leak + distinct exception (issue #20)
+# --------------------------------------------------------------------------
+# When ION declines outbound ZCO space, base_bp_send must free the payload it
+# already copied into SDR and surface a distinct, recoverable backpressure
+# error, rather than stranding the payload and raising a generic MemoryError.
+
+def _sdr_free_total():
+    """Total reclaimable SDR heap space: unused arena + large-pool free list.
+
+    A refused send copies the payload into the SDR large pool and then frees
+    it; the freed bytes return to the large-pool free list rather than to the
+    unused arena, so neither figure alone is conserved -- but their sum is.
+    A genuine leak (payload never freed) drops the sum permanently.
+    """
+    stats = _mem.sdr_dump()[0]
+    return stats["heap_avail"] + stats["large_pool_avail"]
+
+
+def test_send_backpressure_no_leak():
+    """A refused outbound send frees its payload and raises BlockingIOError.
+
+    Offers a payload larger than the node's outbound ZCO budget (but still
+    small enough that the SDR copy itself succeeds) so ION declines the ZCO.
+    Then asserts:
+      (B) the refusal raises BlockingIOError (recoverable backpressure), not a
+          generic MemoryError; and
+      (A) repeating the refusal many times does not lower the total free SDR
+          heap by even a single payload -- i.e. each refused send reclaims the
+          payload it copied in (no per-attempt leak).
+
+    Against the pre-fix code this fails on both counts: the refusal raised
+    MemoryError and each attempt stranded one payload in the SDR heap.
+    """
+    sap = _bp.bp_open(EID, 0, 0)  # non-blocking path: endpoint has no attendant
+    try:
+        H = _sdr_free_total()
+
+        # The outbound ZCO budget is a fraction of the heap, so a large-enough
+        # fraction is refused at the ZCO stage. Each probe is kept well below
+        # the currently-free heap so a raise is a ZCO-space decline, never an
+        # SDR-insert failure. The first probe that is refused wins; smaller
+        # probes that are accepted simply consume a little heap.
+        refuse_size = None
+        refuse_exc = None
+        for size in (H // 4, H // 3, H // 2, (2 * H) // 3):
+            free_now = _sdr_free_total()
+            if size <= 0 or size > (free_now * 4) // 5:
+                continue  # too large to insert reliably on this node right now
+            try:
+                _bp.bp_send(sap, "ipn:1.2", None, 3600, 1, 0, 0, 0, 0, b"\0" * size)
+            except Exception as exc:  # noqa: BLE001 - classify it below
+                refuse_size, refuse_exc = size, exc
+                break
+
+        if refuse_size is None:
+            print("    [skip] could not provoke an outbound ZCO refusal on this node")
+            return
+
+        # (B) Backpressure must be a distinct, non-fatal signal.
+        if not isinstance(refuse_exc, BlockingIOError):
+            raise AssertionError(
+                "refused send raised %s (%s), expected BlockingIOError"
+                % (type(refuse_exc).__name__, refuse_exc))
+
+        # (A) Repeated refusals of the same size must not leak.
+        N = 40
+        before = _sdr_free_total()
+        refusals = 0
+        for _ in range(N):
+            try:
+                _bp.bp_send(sap, "ipn:1.2", None, 3600, 1, 0, 0, 0, 0,
+                            b"\0" * refuse_size)
+            except BlockingIOError:
+                refusals += 1
+            except Exception as exc:  # noqa: BLE001
+                raise AssertionError(
+                    "refused send raised %s mid-run after %d refusals -- a leak "
+                    "likely exhausted the heap" % (type(exc).__name__, refusals))
+        after = _sdr_free_total()
+
+        if refusals != N:
+            raise AssertionError("expected %d refusals, got %d" % (N, refusals))
+        dropped = before - after
+        if dropped >= refuse_size:
+            raise AssertionError(
+                "total free SDR fell by %d bytes across %d refused sends of %d "
+                "bytes -- the payload is being leaked on the refusal path"
+                % (dropped, N, refuse_size))
+        print("    %d refusals of %d B held the SDR heap flat (drop=%d B < 1 "
+              "payload); backpressure raised BlockingIOError"
+              % (N, refuse_size, max(dropped, 0)))
+    finally:
+        cl_done, _cl_box = call_in_thread(lambda: _bp.bp_close(sap))
+        cl_done.wait(OP_TIMEOUT)
+
+
 # Tests deferred until an external dependency lands: kept version-controlled
 # and visible but not executed (main() reports them as skipped). An entry
 # moves into TESTS once its dependency is satisfied. Currently empty -- the
@@ -593,6 +691,8 @@ TESTS = [
     test_cfdp_close_while_ops_in_flight,
     test_cfdp_interrupt_unblocks_next_event,
     test_concurrent_open_same_endpoint,
+    # Runs last: its probes consume and fragment a little SDR heap.
+    test_send_backpressure_no_leak,
 ]
 
 

@@ -363,8 +363,22 @@ static PyObject *pyion_bp_send(PyObject *self, PyObject *args)
     case PYION_SDR_ERR:
         pyion_SetExc(PyExc_MemoryError, "SDR memory could not be allocated.");
         return NULL;
+    case PYION_ZCO_REFUSED_ERR:
+        // Transient, recoverable backpressure: ION declined outbound ZCO space
+        // for this bundle. Distinct from a true out-of-memory condition so the
+        // caller can wait for capacity and retry. The payload has been freed.
+        pyion_SetExc(PyExc_BlockingIOError,
+                     "ION declined outbound ZCO space (backpressure); the bundle was "
+                     "not accepted. Wait for capacity and retry.");
+        return NULL;
     case PYION_IO_ERR:
-        pyion_SetExc(PyExc_MemoryError, "ZCO object creation failed.");
+        pyion_SetExc(PyExc_OSError, "ION failed to create the outbound ZCO or send the bundle.");
+        return NULL;
+    case PYION_SEND_ERR:
+        pyion_SetExc(PyExc_RuntimeError, "ION did not accept the bundle (bp_send reported a user error).");
+        return NULL;
+    case PYION_INTERRUPTED_ERR:
+        pyion_SetExc(PyExc_ConnectionError, "ION send interrupted.");
         return NULL;
     case PYION_CONN_ABORTED_ERR:
         pyion_SetExc(PyExc_ConnectionError, "Endpoint is closing.");

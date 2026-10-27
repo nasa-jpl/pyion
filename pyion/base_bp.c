@@ -489,8 +489,12 @@ int base_bp_send(unsigned long handle, BpTx *txInfo)
 {
     SdrObject newBundle;
     Sdr sdr = NULL;
-    SdrObject bundleZco;
-    SdrObject bundleSdr;
+    SdrObject bundleZco = 0;
+    // bundleSdr tracks the payload copy that pyion owns. It is non-zero only
+    // while ownership has NOT yet passed to a ZCO/bundle; the single cleanup
+    // path (done:) frees it iff it is still non-zero, so every error exit
+    // reclaims the payload instead of stranding it in the SDR heap.
+    SdrObject bundleSdr = 0;
     int ok;
     int result = 0;
     int err;
@@ -518,22 +522,78 @@ int base_bp_send(unsigned long handle, BpTx *txInfo)
         goto done;
     }
     bundleSdr = sdr_insert(sdr, txInfo->data, (size_t)txInfo->data_size);
-    if (sdr_end_xn(sdr) < 0) {
+    if (sdr_end_xn(sdr) < 0 || bundleSdr == 0) {
+        // The transaction failed or nothing was allocated; there is no
+        // committed SDR object to reclaim.
+        bundleSdr = 0;
         result = PYION_SDR_ERR;
         goto done;
     }
 
-    // Create ZCO and send
+    // Wrap the payload in a ZCO. ionCreateZco returns:
+    //   - the ZCO object on success (ownership of bundleSdr passes to it);
+    //   - 0 when outbound ZCO space is not granted -- immediately when the
+    //     endpoint has no attendant (backpressure), or after the attendant is
+    //     paused by a concurrent close/interrupt;
+    //   - ((Object) ERROR) on a hard system failure.
+    // In every non-success case ION has NOT taken ownership of bundleSdr, so
+    // the done: path must free it (which it does, since bundleSdr stays set).
     bundleZco = ionCreateZco(ZcoSdrSource, bundleSdr, 0, txInfo->data_size,
                              txInfo->classOfService, 0, ZcoOutbound, state->attendant);
-    if (bundleZco == 0)
+    if (bundleZco == 0 || bundleZco == (SdrObject) ERROR)
     {
-        result = PYION_IO_ERR;
+        if (bundleZco == (SdrObject) ERROR)
+        {
+            // Hard failure inside ION's ZCO/space machinery.
+            result = PYION_IO_ERR;
+        }
+        else
+        {
+            // A 0 return is space refusal. Disambiguate a refusal caused by a
+            // concurrent close/interrupt (the attendant was paused) from
+            // genuine backpressure, so the caller can tell "endpoint went
+            // away" from "slow down and retry".
+            switch (atomic_load(&(state->status)))
+            {
+            case EID_CLOSING:
+                result = PYION_CONN_ABORTED_ERR;
+                break;
+            case EID_INTERRUPTING:
+                result = PYION_INTERRUPTED_ERR;
+                break;
+            default:
+                result = PYION_ZCO_REFUSED_ERR;
+                break;
+            }
+        }
         goto done;
     }
+
+    // Ownership of the payload now belongs to the ZCO; clear bundleSdr so the
+    // cleanup path does not free it out from under the ZCO.
+    bundleSdr = 0;
+
     ok = bp_send(state->sap, txInfo->destEid, txInfo->reportEid, txInfo->ttl,
                  txInfo->classOfService, txInfo->custodySwitch, txInfo->rrFlags,
                  txInfo->ackReq, txInfo->ancillaryData, bundleZco, &newBundle);
+
+    // bp_send returns 1 only if the ADU was accepted; 0 is a user error and -1
+    // a system error. Per bp.h ION takes ownership of the ZCO ONLY on a 1
+    // return, so on any other return we must destroy the ZCO ourselves (which
+    // also releases its SDR source extent) rather than report a false success.
+    if (ok != 1)
+    {
+        if (sdr_begin_xn(sdr))
+        {
+            zco_destroy(sdr, bundleZco);
+            if (sdr_end_xn(sdr) < 0 && result == 0)
+                result = PYION_SDR_ERR;
+        }
+        bundleZco = 0;
+        if (result == 0)
+            result = (ok == 0) ? PYION_SEND_ERR : PYION_IO_ERR;
+        goto done;
+    }
 
     // If you want custody transfer and have specified a re-transmission timer,
     // then activate it
@@ -542,7 +602,8 @@ int base_bp_send(unsigned long handle, BpTx *txInfo)
         // Note: The timer starts as soon as bp_memo is called.
         ok = bp_memo(newBundle, txInfo->retxTimer);
 
-        // Handle error in bp_memo
+        // Handle error in bp_memo. The bundle was already accepted by bp_send,
+        // so its ZCO is owned by BP; we only report the scheduling failure.
         if (ok < 0)
         {
             result = ok;
@@ -555,6 +616,18 @@ int base_bp_send(unsigned long handle, BpTx *txInfo)
         bp_release(newBundle);
 
 done:
+    // Reclaim the payload copy if it never became (part of) a bundle. ION did
+    // not take ownership on any error path above, so this is the single owner
+    // and the free happens exactly once.
+    if (bundleSdr != 0)
+    {
+        if (sdr_begin_xn(sdr))
+        {
+            sdr_free(sdr, bundleSdr);
+            sdr_end_xn(sdr);
+        }
+        bundleSdr = 0;
+    }
     pthread_mutex_unlock(&(state->send_lock));
     endpoint_release(state);
     return result;
