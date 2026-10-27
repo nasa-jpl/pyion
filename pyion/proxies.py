@@ -425,8 +425,9 @@ class CfdpProxy(utils.Proxy):
     @utils._chk_attached
     @utils.in_ion_folder
     def cfdp_open(self, peer_entity_nbr, endpoint, mode=cst.CfdpMode.CFDP_BP_RELIABLE,
-                  closure_latency=cst.CfdpClosure.CFDP_NO_CLOSURE, 
-                  seg_metadata=cst.CfdpMetadataEnum.CFDP_NO_SEG_METADATA):
+                  closure_latency=cst.CfdpClosure.CFDP_NO_CLOSURE,
+                  seg_metadata=cst.CfdpMetadataEnum.CFDP_NO_SEG_METADATA,
+                  monitor_events=True):
         """ Open a CFDP entity
 
             :param peer_entity_nbr:
@@ -434,7 +435,11 @@ class CfdpProxy(utils.Proxy):
             :param mode: Reliable vs. Non-reliable. See all options in ``pyion.constants``
             :param closure_latency: See ``help(CfdpClosure)``
             :param seg_metadata:
-        """ 
+            :param monitor_events: If True (default), the entity runs an internal
+                thread that reads CFDP events and dispatches to handlers. Set to
+                False to let the application read events itself via
+                ``Entity.get_next_event`` (sole reader of the node-global queue).
+        """
         # If already open, return it
         if peer_entity_nbr in self._ett_map:
             return self._ett_map[peer_entity_nbr]
@@ -451,7 +456,8 @@ class CfdpProxy(utils.Proxy):
 
         # Create a CFDP entity object
         ett_obj = cfdp.Entity(self, peer_entity_nbr, param_addr, endpoint,
-                              int(mode), int(closure_latency), int(seg_metadata))
+                              int(mode), int(closure_latency), int(seg_metadata),
+                              monitor_events=monitor_events)
 
         # Store it
         self._ett_map[peer_entity_nbr] = ett_obj

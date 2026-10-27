@@ -352,14 +352,18 @@ static PyObject *pyion_cfdp_send(PyObject *self, PyObject *args) {
                           &destFile, &closureLat, &segMetadata, &mode))
         return NULL;
 
+    uvast txNbr = 0;
+
     Py_BEGIN_ALLOW_THREADS
-    status = base_cfdp_send(handle, sourceFile, destFile, closureLat, segMetadata, mode);
+    status = base_cfdp_send(handle, sourceFile, destFile, closureLat, segMetadata, mode, &txNbr);
     Py_END_ALLOW_THREADS
 
     if (cfdp_raise_if_error(status, "Cannot do cfdp_put operation, check ion.log."))
         return NULL;
 
-    Py_RETURN_NONE;
+    // Return the transaction number ION assigned so callers can correlate this
+    // send with its later CFDP events (e.g. the transaction-finished indication).
+    return Py_BuildValue("K", (unsigned long long)txNbr);
 }
 
 static PyObject *pyion_cfdp_request(PyObject *self, PyObject *args) {
@@ -519,69 +523,83 @@ static PyObject *pyion_cfdp_next_event(PyObject *self, PyObject *args) {
         return Py_BuildValue("(i, z)", (int)CfdpNoEvent, NULL);
     }
 
+    // Every event carries a transaction identity. Expose the source entity and
+    // transaction number consistently across all event dictionaries so a caller
+    // consuming the node-global CFDP queue can correlate events by
+    // (source_entity_id, transaction_id). The source entity is taken from the
+    // event's own transactionId, not the proxy-only originatingTransactionId,
+    // which is zero for a direct (non-proxy) transfer.
+    base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
+    base_cfdp_decompress_number(&source_entity_nbr, &(transactionId.sourceEntityNbr));
+
     // Handle CfdpTransactionInd
     if (type == CfdpTransactionInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-        return Py_BuildValue("(i, {s:K})", (int)CfdpTransactionInd,
-                                           "transaction_id", (unsigned long long)transaction_id);
+        return Py_BuildValue("(i, {s:K, s:K})", (int)CfdpTransactionInd,
+                                           "transaction_id", (unsigned long long)transaction_id,
+                                           "source_entity_id", (unsigned long long)source_entity_nbr);
     }
 
     // Handle CfdpEofSentInd
     if (type == CfdpEofSentInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-        return Py_BuildValue("(i, {s:K})", (int)CfdpEofSentInd,
-                                           "transaction_id", (unsigned long long)transaction_id);
+        return Py_BuildValue("(i, {s:K, s:K})", (int)CfdpEofSentInd,
+                                           "transaction_id", (unsigned long long)transaction_id,
+                                           "source_entity_id", (unsigned long long)source_entity_nbr);
     }
 
     // Handle CfdpEofRecvInd
     if (type == CfdpEofRecvInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-        return Py_BuildValue("(i, {s:K})", (int)CfdpEofRecvInd,
-                                           "transaction_id", (unsigned long long)transaction_id);
+        return Py_BuildValue("(i, {s:K, s:K})", (int)CfdpEofRecvInd,
+                                           "transaction_id", (unsigned long long)transaction_id,
+                                           "source_entity_id", (unsigned long long)source_entity_nbr);
     }
 
     // Handle CfdpSuspendedInd
     if (type == CfdpSuspendedInd) {
-        return Py_BuildValue("(i, {s:i})", (int)CfdpSuspendedInd, "condition", (int)condition);
+        return Py_BuildValue("(i, {s:K, s:K, s:i})", (int)CfdpSuspendedInd,
+                                           "transaction_id", (unsigned long long)transaction_id,
+                                           "source_entity_id", (unsigned long long)source_entity_nbr,
+                                           "condition", (int)condition);
     }
 
     // Handle CfdpResumedInd
     if (type == CfdpResumedInd) {
-        return Py_BuildValue("(i, {s:K})", (int)CfdpResumedInd, "progress", (unsigned long long)progress);
+        return Py_BuildValue("(i, {s:K, s:K, s:K})", (int)CfdpResumedInd,
+                                           "transaction_id", (unsigned long long)transaction_id,
+                                           "source_entity_id", (unsigned long long)source_entity_nbr,
+                                           "progress", (unsigned long long)progress);
     }
 
     // Handle CfdpReportInd
     if (type == CfdpReportInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-        return Py_BuildValue("(i, {s:K, s:i})", (int)CfdpReportInd, "transaction_id",
-                                                (unsigned long long)transaction_id,
+        return Py_BuildValue("(i, {s:K, s:K, s:i})", (int)CfdpReportInd,
+                                                "transaction_id", (unsigned long long)transaction_id,
+                                                "source_entity_id", (unsigned long long)source_entity_nbr,
                                                 "status", (int)fileStatus);
-
     }
 
     // Handle CfdpFaultInd
     if (type == CfdpFaultInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-        return Py_BuildValue("(i, {s:K, s:i, s:K})", (int)CfdpFaultInd, "transaction_id",
-                                                     (unsigned long long)transaction_id,
+        return Py_BuildValue("(i, {s:K, s:K, s:i, s:K})", (int)CfdpFaultInd,
+                                                     "transaction_id", (unsigned long long)transaction_id,
+                                                     "source_entity_id", (unsigned long long)source_entity_nbr,
                                                      "code", (int)deliveryCode,
                                                      "progress", (unsigned long long)progress);
     }
 
     // Handle CfdpAbandonedInd
     if (type == CfdpAbandonedInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-        return Py_BuildValue("(i, {s:K, s:i, s:K})", (int)CfdpAbandonedInd, "transaction_id",
-                                                     (unsigned long long)transaction_id,
+        return Py_BuildValue("(i, {s:K, s:K, s:i, s:K})", (int)CfdpAbandonedInd,
+                                                     "transaction_id", (unsigned long long)transaction_id,
+                                                     "source_entity_id", (unsigned long long)source_entity_nbr,
                                                      "code", (int)deliveryCode,
                                                      "progress", (unsigned long long)progress);
     }
 
     // Handle CfdpFileSegmentRecvInd
     if (type == CfdpFileSegmentRecvInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-        return Py_BuildValue("(i, {s:K, s:K, s:I})", (int)CfdpFileSegmentRecvInd,
+        return Py_BuildValue("(i, {s:K, s:K, s:K, s:I})", (int)CfdpFileSegmentRecvInd,
                                                "transaction_id", (unsigned long long)transaction_id,
+                                               "source_entity_id", (unsigned long long)source_entity_nbr,
                                                "offset", (unsigned long long)offset,
                                                "length", (unsigned int)length);
     }
@@ -592,8 +610,9 @@ static PyObject *pyion_cfdp_next_event(PyObject *self, PyObject *args) {
 
     // Handle CfdpMetadataRecvInd
     if (type == CfdpMetadataRecvInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-        base_cfdp_decompress_number(&source_entity_nbr, &(originatingTransactionId.sourceEntityNbr));
+        // transaction_id and source_entity_nbr were decompressed above from the
+        // event's own transactionId; for a received file that source entity is
+        // the sender, which is what the receiver needs to report.
 
         // Get all messages
         while (messagesToUser) {
@@ -636,10 +655,9 @@ static PyObject *pyion_cfdp_next_event(PyObject *self, PyObject *args) {
 
     // Handle CfdpTransactionFinishedInd
     if (type == CfdpTransactionFinishedInd) {
-        base_cfdp_decompress_number(&transaction_id, &(transactionId.transactionNbr));
-
         // Expose the transaction-level results
         PyDict_SetItemString(py_fs, "transaction_id", Py_BuildValue("K", (unsigned long long)transaction_id));
+        PyDict_SetItemString(py_fs, "source_entity_id", Py_BuildValue("K", (unsigned long long)source_entity_nbr));
         PyDict_SetItemString(py_fs, "status_report", Py_BuildValue("s", statusReportBuf));
         PyDict_SetItemString(py_fs, "condition_code", Py_BuildValue("i", (int)condition));
         PyDict_SetItemString(py_fs, "file_status", Py_BuildValue("i", (int)fileStatus));

@@ -34,8 +34,15 @@ __all__ = ['Entity']
 class Entity():
 	""" Class to represent a CFDP entity. """
 	def __init__(self, proxy, peer_entity_nbr, param_addr, endpoint, mode,
-				 closure_latency, seg_metadata):
-		""" Class initializer """
+				 closure_latency, seg_metadata, monitor_events=True):
+		""" Class initializer
+
+			:param monitor_events: If True (default), the entity runs an internal
+				thread that reads the node-global CFDP event queue and dispatches
+				to registered handlers. Set to False when the application wants to
+				be the sole reader of that queue (via ``get_next_event``); no
+				internal thread is then started to compete for events.
+		"""
 		# Store variables
 		self.proxy        = proxy
 		self.entity_nbr   = peer_entity_nbr
@@ -53,9 +60,14 @@ class Entity():
 		self._end_transaction = Event()
 		self._ok_transaction = False
 
-		# Start a thread to monitor all events
-		self.th = Thread(target=self._monitor_events, daemon=False)
-		self.th.start()
+		# Start a thread to monitor all events, unless the caller opted out so it
+		# can read the node-global CFDP event queue itself.
+		self._monitor_enabled = monitor_events
+		if self._monitor_enabled:
+			self.th = Thread(target=self._monitor_events, daemon=False)
+			self.th.start()
+		else:
+			self.th = None
 
 	def __del__(self):
 		# If you have already been closed, return
@@ -80,11 +92,13 @@ class Entity():
 		self._param_addr = None
 		self.endpoint    = None
 
-		# Stop the thread monitoring CFDP events
-		_cfdp.cfdp_interrupt_events()
+		# Stop the thread monitoring CFDP events (only if one was started)
+		if self.th is not None:
+			_cfdp.cfdp_interrupt_events()
 
-		# Wait until the event thread has finished
-		self.th.join()
+			# Wait until the event thread has finished
+			self.th.join()
+			self.th = None
 
 		# Mark end of transactions to wake up threads
 		self._mark_transaction_end(False)
@@ -99,6 +113,9 @@ class Entity():
 			:param dest_file: str or Path. Name of file at receiving
 							  engine. It defaults to source_file
 			:param **kwargs: See ``proxy.cfdp_send``
+			:return: Transaction number assigned by ION to this transfer, which
+					 matches the ``transaction_id`` reported in the corresponding
+					 CFDP events (e.g. the transaction-finished indication).
 		"""
 		# Create path object
 		src_file = Path(source_file)
@@ -121,8 +138,8 @@ class Entity():
 		# Mark that the current transaction has not succeeded yet
 		self._ok_transaction = False
 
-		# Trigger CFDP send
-		_cfdp.cfdp_send(self._param_addr, str(src_file), str(dst_file), 
+		# Trigger CFDP send and return the assigned transaction number
+		return _cfdp.cfdp_send(self._param_addr, str(src_file), str(dst_file),
 							  closure_lat, seg_metadata, mode)
 
 	@utils._chk_is_open
@@ -197,6 +214,26 @@ class Entity():
 		# Call pyion function
 		_cfdp.cfdp_add_filestore_request(self._param_addr, action, file1, file2)
 	
+	def get_next_event(self):
+		""" Read the next CFDP event directly from the node-global event queue.
+
+			Intended for applications that opened the entity with
+			``monitor_events=False`` and therefore want to be the sole reader of
+			that queue. The CFDP event queue is process-global, so this must not
+			be used together with the internal monitor thread.
+
+			:return: Tuple ``(CfdpEventEnum, params_dict)``. See the event
+					 dictionaries built in ``_cfdp`` for the per-event fields;
+					 every event carries ``transaction_id`` and
+					 ``source_entity_id`` for correlation.
+		"""
+		if self._monitor_enabled:
+			raise RuntimeError('get_next_event() requires monitor_events=False; '
+							   'the internal monitor thread already consumes events')
+
+		evt, ev_params = _cfdp.cfdp_next_event()
+		return CfdpEventEnum(evt), ev_params
+
 	def register_event_handler(self, event, func):
 		""" Register and event handler for this entity
 

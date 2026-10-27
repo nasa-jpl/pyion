@@ -299,11 +299,16 @@ int base_cfdp_add_fs_req(unsigned long handle, int action,
 }
 
 int base_cfdp_send(unsigned long handle, char *sourceFile, char *destFile,
-                   int closureLat, int segMetadata, long int mode)
+                   int closureLat, int segMetadata, long int mode,
+                   uvast *transactionNbr)
 {
     CfdpReqParms *params;
     int err;
     int result = 0;
+
+    // Default the output so the caller never reads an uninitialized value.
+    if (transactionNbr != NULL)
+        *transactionNbr = 0;
 
     params = params_acquire(handle, &err);
     if (params == NULL)
@@ -319,6 +324,10 @@ int base_cfdp_send(unsigned long handle, char *sourceFile, char *destFile,
                  NULL, 0, NULL, params->closureLatency, params->msgsToUser,
                  params->fsRequests, &(params->transactionId)) < 0) {
         result = PYION_IO_ERR;
+    } else if (transactionNbr != NULL) {
+        // Surface the transaction number ION assigned to this send so the
+        // caller can correlate it with later CFDP events for the same transfer.
+        base_cfdp_decompress_number(transactionNbr, &(params->transactionId.transactionNbr));
     }
 
     // Reset per-transaction lists whether or not the put succeeded.
