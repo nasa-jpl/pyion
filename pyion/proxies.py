@@ -305,11 +305,18 @@ class BpProxy(utils.Proxy):
         return ept_obj
 
     @utils._chk_attached
-    @utils.in_ion_folder
     def bp_close(self, ept):
         """ Close an endpoint. If it is not open, ``ConnectionError`` is raised.
 
             :param: Endpoint object to close
+
+            .. Note:: Not wrapped in ``in_ion_folder``. Close operates on the
+                      already-open SAP and does not need the node directory, and
+                      it calls ``bp_interrupt``; holding the non-reentrant-at-the-
+                      time directory lock here and re-taking it in ``bp_interrupt``
+                      deadlocked the thread when ``node_dir`` was set. Close/
+                      interrupt must also stay off the lock so they can wake a
+                      receiver that is blocked inside a directory-locked call.
         """
         # If object passed is not endpoint, fail
         if not isinstance(ept, bp.Endpoint):
@@ -335,12 +342,17 @@ class BpProxy(utils.Proxy):
         ept_obj._cleanup()
 
     @utils._chk_attached
-    @utils.in_ion_folder
     def bp_interrupt(self, ept):
         """ Interrupt and endpoint while receiving data. If it is not open, ``ConnectionError`` is raised.
             If this endpoint is not blocked receiving, this call has no effect.
 
             :param: Endpoint object to close
+
+            .. Note:: Not wrapped in ``in_ion_folder``. This is the wake-up path
+                      for a blocked receiver, which holds no directory lock; it
+                      operates on the already-open SAP and must not be gated on
+                      ``ion_dir_lock`` (the receiver it must wake could be holding
+                      it), nor re-enter it from ``bp_close``.
         """
         # If object passed is not endpoint, fail
         if not isinstance(ept, bp.Endpoint):
