@@ -258,11 +258,18 @@ class Endpoint():
 
 			return self.rx_result
 
-	@utils.in_ion_folder
 	def _bp_receive(self, return_headers):
 		""" Receive one bundle.
 
 			:param return_headers: If true, will return bundle headers.
+
+			.. Note:: Deliberately NOT wrapped in ``in_ion_folder``. This is a
+					  blocking call on an already-open SAP; holding
+					  ``ion_dir_lock`` across it (when ``node_dir`` is set) would
+					  keep the lock for the entire, unbounded receive, so the
+					  interrupt/timeout path that must wake this receiver could
+					  never acquire it -- a deadlock. The open SAP already carries
+					  the node context, so no directory switch is needed here.
 		"""
 		# Get payload from next bundle. If exception, return it too
 		try:

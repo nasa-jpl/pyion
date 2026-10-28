@@ -19,9 +19,17 @@ from pathlib import Path
 import time
 import threading
 
-# Global lock to ensure that only one thread changes the directory at a time
+# Global lock to ensure that only one thread changes the directory at a time.
 # This is necessary because os.chdir() affects the entire process.
-ion_dir_lock = threading.Lock()
+#
+# It is an RLock, not a Lock: a directory-sensitive proxy call may legitimately
+# invoke another directory-sensitive call on the same thread, and re-entering a
+# plain Lock would self-deadlock. Reentrancy is safe here because the lock only
+# guards the process-global working directory -- a nested call runs with the
+# directory already set correctly. Note that RLock does NOT help the cross-thread
+# case, so the interrupt/close wake-up path and the blocking receive must stay
+# off this lock entirely (see in_ion_folder and the bp proxy/endpoint methods).
+ion_dir_lock = threading.RLock()
 
 import pyion
 
@@ -94,11 +102,14 @@ def in_ion_folder(func):
         # process-global state to protect and no reason to take the lock. This
         # is always the case unless multiple ION nodes run in a single process.
         #
-        # Taking ion_dir_lock here would be actively harmful: it would be held
-        # across the wrapped call, including blocking calls such as bp_receive,
-        # so the interrupt/timeout path -- proxy.bp_interrupt(), which is also
-        # decorated with in_ion_folder -- could never acquire it, deadlocking
-        # the very call meant to wake the blocked receiver.
+        # Holding ion_dir_lock across the wrapped call is only safe for calls
+        # that are non-blocking and that do not depend on being woken by another
+        # thread. It must never be held across a blocking call (e.g. a blocking
+        # receive) or on a wake-up path (interrupt/close): a blocked receiver
+        # would hold the lock indefinitely and the interrupt meant to wake it
+        # could never acquire it. Those methods therefore operate on their
+        # already-open SAP without this decorator; see BpProxy.bp_close/
+        # bp_interrupt and Endpoint._bp_receive.
         if node_dir is None:
             return func(self, *args, **kwargs)
 
