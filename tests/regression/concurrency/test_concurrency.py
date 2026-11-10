@@ -3,6 +3,7 @@ import time
 import os
 import unittest
 import sys
+import types
 from unittest.mock import MagicMock, patch
 
 # --- MOCK INITIALIZATION ---
@@ -28,6 +29,17 @@ sys.modules['_cfdp'] = mock_cfdp
 sys.modules['_mgmt'] = UniqueMock()
 sys.modules['_mem'] = UniqueMock()
 sys.modules['_utils'] = UniqueMock()
+# pyion/__init__.py checks the ION libraries on import; this job has no ION.
+_preflight_stub = types.ModuleType('pyion._preflight')
+_preflight_stub.check_ion_installation = lambda ion_version: None
+sys.modules['pyion._preflight'] = _preflight_stub
+
+# pyion/__init__.py also imports pyion._build_info, which is generated and not
+# committed; stub it so this script works on a fresh checkout.
+_build_info_stub = types.ModuleType('pyion._build_info')
+_build_info_stub.ION_VERSION = '0.0.0-test'
+_build_info_stub.BP_VERSION = 'BPv7'
+sys.modules['pyion._build_info'] = _build_info_stub
 
 # Now we can import pyion
 import pyion

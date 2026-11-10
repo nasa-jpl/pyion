@@ -145,13 +145,16 @@ jobs:
         with:
           python-version: '3.12'
 
+      # pyion/__init__.py imports pyion/_build_info.py, which only the build
+      # normally writes. This job builds nothing, so generate it from
+      # ion-pin.env; test_build_info_attributes checks it against the pin.
+      - name: Write build info from the ION pin
+        run: python3 scripts/ionpin.py --write-build-info
       # Exercises the Python-layer locks in pyion/utils.py and pyion/bp.py.
       # The ION C extensions are mocked, so no ION install or build is needed;
-      # PYTHONPATH makes the in-tree pyion package importable and
-      # PYION_BP_VERSION satisfies pyion.bp's import-time check.
+      # PYTHONPATH makes the in-tree pyion package importable.
       - name: Python-layer concurrency tests
         env:
-          PYION_BP_VERSION: BPv7
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python3 tests/regression/concurrency/test_concurrency.py
