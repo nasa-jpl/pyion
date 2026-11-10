@@ -1,0 +1,54 @@
+# Portable pyion functional-test image (Linux / WSL2 / macOS).
+#
+# Builds ION-DTN from source plus the toolchain and Python needed to compile
+# pyion's C extensions and run the two-node protocol tests under tests/.
+#
+# This is the counterpart to docker/Dockerfile (the single-node image used by
+# the C-layer concurrency suite and .github/workflows/regression.yml). This
+# one drives the two-node functional network in docker/compose.yaml.
+#
+# pyion itself is intentionally NOT baked into this image: it is built at
+# container start from the mounted working copy (see docker/compose.yaml), so
+# you can edit pyion and re-run without rebuilding the image. This mirrors the
+# existing tests/<proto>_tests/test_network.yaml flow.
+#
+# ION version and source are build args so this is easy to bump:
+#   docker build --build-arg ION_REF=ion-open-source-4.2.1-a.1 ...
+FROM ubuntu:24.04
+
+ARG ION_REF=ion-open-source-4.2.1-a.1
+ARG ION_REPO=https://github.com/nasa-jpl/ION-DTN.git
+ARG PYION_BP_VERSION=BPv7
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Build + runtime dependencies:
+#  - build-essential/autotools/libtool/m4: ION's autoreconf + configure + make
+#  - git/ca-certificates: clone ION
+#  - python3 + dev + setuptools: build pyion C extensions at runtime
+#  - libexpat1-dev: ION dependency
+#  - iproute2/iputils-ping: handy for debugging the two-node network
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential autoconf automake libtool m4 pkg-config \
+        git ca-certificates \
+        python3 python3-dev python3-setuptools \
+        libexpat1-dev \
+        iproute2 iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build and install ION. The source tree is kept at ION_HOME because pyion's
+# setup.py compiles against ION's private headers (e.g. ltpP.h) found there,
+# while the built libraries/public headers land in /usr/local.
+ENV ION_HOME=/opt/ion
+RUN git clone --depth 1 --branch "${ION_REF}" "${ION_REPO}" "${ION_HOME}" \
+    && cd "${ION_HOME}" \
+    && autoreconf -fi \
+    && ./configure \
+    && make -j"$(nproc)" \
+    && make install \
+    && ldconfig
+
+ENV PYION_BP_VERSION=${PYION_BP_VERSION}
+
+# pyion is mounted here at runtime and built by the compose command.
+WORKDIR /home/ion-interface
