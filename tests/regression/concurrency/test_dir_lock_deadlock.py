@@ -22,6 +22,7 @@ timer, so a regression manifests as a FAIL/timeout rather than an infinite hang.
 """
 import os
 import sys
+import types
 import tempfile
 import threading
 import time
@@ -52,6 +53,10 @@ sys.modules['_cfdp'] = UniqueMock()
 sys.modules['_mgmt'] = UniqueMock()
 sys.modules['_mem'] = UniqueMock()
 sys.modules['_utils'] = UniqueMock()
+# pyion/__init__.py checks the ION libraries on import; this job has no ION.
+_preflight_stub = types.ModuleType('pyion._preflight')
+_preflight_stub.check_ion_installation = lambda ion_version: None
+sys.modules['pyion._preflight'] = _preflight_stub
 
 import pyion  # noqa: E402
 from pyion import utils  # noqa: E402
