@@ -159,3 +159,11 @@ jobs:
         run: |
           python3 tests/regression/concurrency/test_concurrency.py
           python3 tests/regression/concurrency/test_dir_lock_deadlock.py
+
+      # The release-pipeline consistency tests are pure file/YAML checks:
+      # no ION install and no compiled extensions required.
+      - name: Install test dependencies
+        run: python -m pip install pytest pyyaml
+
+      - name: Release pipeline consistency tests
+        run: python -m pytest tests/test_release_pipeline.py -q
