@@ -1,0 +1,8 @@
+# ltpadmin: minimal single-node LTP setup for the concurrency test.
+#
+# A loopback span to the local engine (node 1) is enough for the test to
+# attach to LTP, open a client, and block in ltp_receive so that
+# interrupt/close behaviour can be exercised. No real LTP traffic occurs.
+1 10
+a span 1 10 10 1400 10000 1 'udplso 127.0.0.1:1113'
+s 'udplsi 127.0.0.1:1113'

@@ -1,0 +1,143 @@
+name: build-wheels
+
+# Pull requests and pushes to master build and smoke test the wheels. Pull requests
+# from this repository and manual runs also publish a pre-release. A push to master
+# publishes the stable release for the pyion version in ion-pin.env, unless that
+# release already exists.
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "ion-pin.env"
+      - "setup.py"
+      - "pyproject.toml"
+      - "pyion/**"
+      - "scripts/**"
+      - "tests/loopback/**"
+      - "docker/Dockerfile"
+      - ".github/workflows/build-wheels.yml"
+  push:
+    branches: [master]
+    paths:
+      - "ion-pin.env"
+      - "setup.py"
+      - "pyproject.toml"
+      - "pyion/**"
+      - "scripts/**"
+      - "tests/loopback/**"
+      - "docker/Dockerfile"
+      - ".github/workflows/build-wheels.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    outputs:
+      ion_tag: ${{ steps.pin.outputs.ion_tag }}
+      release_tag: ${{ steps.pin.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read ION pin and derive the release tag
+        id: pin
+        run: |
+          . ./ion-pin.env
+          echo "ion_tag=$ION_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_tag=pyion-v${PYION_VERSION%%+*}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: pin
+    runs-on: ubuntu-latest
+    env:
+      CONTAINER_ENGINE: docker
+      ION_TAG: ${{ needs.pin.outputs.ion_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheels in manylinux_2_28
+        run: scripts/build_wheels.sh "$ION_TAG" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: dist/
+
+  smoke:
+    needs: [pin, build]
+    runs-on: ubuntu-latest
+    env:
+      CONTAINER_ENGINE: docker
+      ION_TAG: ${{ needs.pin.outputs.ion_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist/
+      - name: Smoke test every wheel
+        run: |
+          for whl in dist/*.whl; do
+            scripts/smoke_test.sh "$whl" "$ION_TAG"
+          done
+
+  prerelease:
+    # Fork pull requests get a read-only token, so they only build and smoke test.
+    needs: [pin, smoke]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ION_TAG: ${{ needs.pin.outputs.ion_tag }}
+      RELEASE_TAG: ${{ needs.pin.outputs.release_tag }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist/
+      - name: Create pre-release
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            tag="${RELEASE_TAG}-pr${PR_NUMBER}-run${GITHUB_RUN_NUMBER}"
+          else
+            tag="${RELEASE_TAG}-rc${GITHUB_RUN_NUMBER}"
+          fi
+          gh release create "$tag" dist/*.whl dist/SHA256SUMS \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "pyion $tag" \
+            --notes "Pre-release built from $GITHUB_SHA for ION $ION_TAG."
+          scripts/check_release.sh "$tag"
+
+  release:
+    needs: [pin, smoke]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ION_TAG: ${{ needs.pin.outputs.ion_tag }}
+      RELEASE_TAG: ${{ needs.pin.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist/
+      - name: Create release unless it already exists
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists; nothing to publish"
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" dist/*.whl dist/SHA256SUMS \
+            --target "$GITHUB_SHA" \
+            --title "pyion $RELEASE_TAG" \
+            --notes "Prebuilt pyion wheels for ION $ION_TAG."
+          scripts/check_release.sh "$RELEASE_TAG"

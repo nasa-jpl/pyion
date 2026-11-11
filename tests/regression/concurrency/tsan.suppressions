@@ -1,0 +1,11 @@
+# ThreadSanitizer suppressions for the pyion C-layer concurrency test.
+#
+# CPython 3.13's free-threading mode is experimental, and ThreadSanitizer
+# reports data races inside the interpreter itself -- biased reference
+# counting (Python/brc.c), dict internals (Objects/dictobject.c), and so on.
+# Those are CPython issues, not pyion issues.
+#
+# These suppressions scope the TSan run to pyion's own C code: a race whose
+# offending accesses originate inside libpython is suppressed, so the run
+# fails only on a race in pyion's C extension (base_bp.c, _bp.c, _mgmt.c, ...).
+called_from_lib:libpython3.13t.so
