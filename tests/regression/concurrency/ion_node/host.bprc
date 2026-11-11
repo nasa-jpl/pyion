@@ -1,0 +1,14 @@
+# bpadmin: a minimal BP node with a single endpoint.
+# No convergence-layer adapter is defined: the test never sends or receives
+# over a network, it only opens ipn:1.1 and blocks in bp_receive so that
+# interrupt/close behaviour can be exercised.
+#
+# The ipn:1.64 / ipn:1.65 endpoints exist so the CFDP UT task (bputa) can
+# register; the CFDP cases exercise the _cfdp handle lifecycle and the global
+# event interrupt, not real file delivery, so no CL is needed.
+1
+a scheme ipn 'ipnfw' 'ipnadminep'
+a endpoint ipn:1.1 x
+a endpoint ipn:1.64 x
+a endpoint ipn:1.65 x
+s
