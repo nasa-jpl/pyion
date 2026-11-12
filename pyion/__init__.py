@@ -32,6 +32,13 @@
 import os
 import warnings    
 
+# Check the ION installation before loading extensions, so a missing or mismatched ION fails with a clear message.
+# This must run before the C extensions are imported, and it must not read
+# PYION_BP_VERSION or ION_HOME.
+from pyion._preflight import check_ion_installation
+from pyion._build_info import ION_VERSION, BP_VERSION
+check_ion_installation(ION_VERSION)
+
 # This pulls up import so that from the user you can do
 # ``import pyion`` instead of having to do one of the following:
 #   - ``from pyion import pyion``

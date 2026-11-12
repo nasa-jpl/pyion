@@ -27,6 +27,8 @@ FROM ubuntu:22.04
 ARG ION_VERSION=4.2.1a1
 ARG ION_TAG=ion-open-source-4.2.1-a.1
 ARG ION_REPO=https://github.com/nasa-jpl/ION-DTN
+# SHA-256 of the tag archive for ION_TAG; keep in sync with scripts/build_wheels.sh.
+ARG ION_SHA256=4599484bd359c7396387010b7649efd7c396c23614d16305f03b796a55e19bcd
 ENV DEBIAN_FRONTEND=noninteractive
 
 # --- Build toolchain + Python development headers --------------------------
@@ -53,6 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # public API into /usr/local. The GitHub archive has no generated ./configure,
 # so it is regenerated with autoreconf.
 RUN wget -q -O /tmp/ion.tar.gz "${ION_REPO}/archive/refs/tags/${ION_TAG}.tar.gz" \
+    && echo "${ION_SHA256}  /tmp/ion.tar.gz" | sha256sum -c - \
     && mkdir -p /home/ion-open-source-${ION_VERSION} \
     && tar -xzf /tmp/ion.tar.gz -C /home/ion-open-source-${ION_VERSION} --strip-components=1 \
     && rm /tmp/ion.tar.gz \

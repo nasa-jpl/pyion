@@ -145,6 +145,19 @@ jobs:
         with:
           python-version: '3.12'
 
+      # pyion/__init__.py imports pyion/_build_info.py, which only setup.py
+      # normally writes. This job builds nothing, so write the same two values
+      # from ion-pin.env here; test_build_info_attributes checks them against
+      # the pin.
+      - name: Write build info from the ION pin
+        run: |
+          python3 -c "
+          pins = dict(l.strip().split('=', 1) for l in open('ion-pin.env')
+                      if l.strip() and not l.startswith('#') and '=' in l)
+          open('pyion/_build_info.py', 'w').write(
+              \"ION_VERSION = '%s'\nBP_VERSION = 'BPv7'\n\" % pins['ION_BUILD_VERSION'])
+          "
+
       # Exercises the Python-layer locks in pyion/utils.py and pyion/bp.py.
       # The ION C extensions are mocked, so no ION install or build is needed;
       # PYTHONPATH makes the in-tree pyion package importable and

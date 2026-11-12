@@ -16,7 +16,7 @@
 # in your system named ``ION_HOME`` that points to the home directory where ION is
 # installed. If ``ION_HOME`` is not provided, all but the ``admin`` module in pyion
 # will be installed.
-#   
+#
 # Author:   Marc Sanchez Net
 # Date:     04/12/2019
 # Updated:  MSN -- 08/28/2019: Adds _admin extension
@@ -26,32 +26,32 @@
 #
 # License Terms
 # -------------
-# Copyright (c) 2019, California Institute of Technology ("Caltech").  
+# Copyright (c) 2019, California Institute of Technology ("Caltech").
 # U.S. Government sponsorship acknowledged.
 #
 # All rights reserved.
 #
-# Redistribution and use in source and binary forms, with or without modification, 
+# Redistribution and use in source and binary forms, with or without modification,
 # are permitted provided that the following conditions are met:
 #
-# * Redistributions of source code must retain the above copyright notice, 
+# * Redistributions of source code must retain the above copyright notice,
 #   this list of conditions and the following disclaimer.
-# * Redistributions must reproduce the above copyright notice, this list 
-#   of conditions and the following disclaimer in the documentation and/or other 
+# * Redistributions must reproduce the above copyright notice, this list
+#   of conditions and the following disclaimer in the documentation and/or other
 #   materials provided with the distribution.
-# * Neither the name of Caltech nor its operating division, the Jet Propulsion Laboratory, 
-#   nor the names of its contributors may be used to endorse or promote products 
+# * Neither the name of Caltech nor its operating division, the Jet Propulsion Laboratory,
+#   nor the names of its contributors may be used to endorse or promote products
 #   derived from this software without specific prior written permission.
 #
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
-# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED 
-# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. 
-# IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, 
-# INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+# IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+# INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
 # BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
-# OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, 
-# WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
-# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY 
+# OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+# WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
 # OF SUCH DAMAGE.
 # ========================================================================================
 
@@ -63,15 +63,30 @@ from setuptools import setup, Extension
 import sys
 from warnings import warn
 
-__version__ = '4.2.1a1'
-__release__ = '4.2.1a1'
+
+def _read_pin(path):
+    pins = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            pins[key.strip()] = value.strip()
+    return pins
+
+
+_PIN = _read_pin(Path(__file__).parent / "ion-pin.env")
+ION_BUILD_VERSION = _PIN["ION_BUILD_VERSION"]
+__version__ = _PIN["PYION_VERSION"]
+__release__ = _PIN["PYION_VERSION"]
 
 # ========================================================================================
 # ===  Helper definitions
 # ========================================================================================
 
+
 class SetupWarning(UserWarning):
     pass
+
 
 # The text of the README file
 README = (Path(__file__).parent / "README.md").read_text()
@@ -80,66 +95,89 @@ README = (Path(__file__).parent / "README.md").read_text()
 # Inform when building on a free-threaded (GIL-disabled) Python 3.13+.
 if sys.version_info >= (3, 13):
     import sysconfig
+
     if sysconfig.get_config_var("Py_GIL_DISABLED"):
-        warn("\n" + "="*80 + "\n" +
-             "NOTE: Free-threading (GIL-disabled) Python detected.\n" +
-             "PYION's C extensions are hardened for thread-safety and declare\n" +
-             "Py_MOD_GIL_NOT_USED, so the package runs with the GIL disabled.\n" +
-             "ION itself (the layer below pyion) is outside pyion's scope.\n" +
-             "="*80 + "\n", SetupWarning)
+        warn(
+            "\n"
+            + "=" * 80
+            + "\n"
+            + "NOTE: Free-threading (GIL-disabled) Python detected.\n"
+            + "PYION's C extensions are hardened for thread-safety and declare\n"
+            + "Py_MOD_GIL_NOT_USED, so the package runs with the GIL disabled.\n"
+            + "ION itself (the layer below pyion) is outside pyion's scope.\n"
+            + "=" * 80
+            + "\n",
+            SetupWarning,
+        )
 
 if sys.version_info.major < 3:
-    raise EnvironmentError('pyion only works with Python3')
+    raise EnvironmentError("pyion only works with Python3")
 
 # ========================================================================================
 # === Locate paths for ION's public/private APIs
 # ========================================================================================
 
 # Grab environment variables
-lib_path = os.environ.get('LD_LIBRARY_PATH')
-ion_path = os.environ.get('ION_HOME')
-bp_version = os.environ.get('PYION_BP_VERSION')
+lib_path = os.environ.get("LD_LIBRARY_PATH")
+ion_path = os.environ.get("ION_HOME")
+bp_version = os.environ.get("PYION_BP_VERSION")
 
 # Check that environment variables are correct
 if not ion_path:
-    raise ValueError(("Environment variable ION_HOME must indicate the location of ION's ",
-                      "source code directory"))
+    raise ValueError(
+        (
+            "Environment variable ION_HOME must indicate the location of ION's ",
+            "source code directory",
+        )
+    )
 if not bp_version:
-    raise ValueError("Environment variable PYION_BP_VERSION is missing. Set it to BPv6 or BPv7")
-                       
+    raise ValueError(
+        "Environment variable PYION_BP_VERSION is missing. Set it to BPv6 or BPv7"
+    )
+
 # Set paths for ION's public API
 if lib_path is None:
     # Default paths
-    ion_inc = Path('/usr/local/include')    # ION headers (.h)
-    ion_lib = Path('/usr/local/lib')        # ION shared libraries (.so)
+    ion_inc = Path("/usr/local/include")  # ION headers (.h)
+    ion_lib = Path("/usr/local/lib")  # ION shared libraries (.so)
 else:
     lib_path = Path(lib_path)
     if not lib_path.exists():
-        raise EnvironmentError('Cannot locate ION public API')
-    
+        raise EnvironmentError("Cannot locate ION public API")
+
     # Get paths
-    ion_inc = (lib_path.parent)/'include'   # ION headers (.h)
-    ion_lib = lib_path                      # ION shared libraries (.so)
+    ion_inc = (lib_path.parent) / "include"  # ION headers (.h)
+    ion_lib = lib_path  # ION shared libraries (.so)
 
 # Set paths for compiling C Extensions
 ion_path = Path(ion_path)
-ici_inc  = ion_path/'ici'/'include'
-ltp_lib  = ion_path/'ltp'/'library'
-cfdp_inc = ion_path/'cfdp'/'include'
-cfdp_lib = ion_path/'cfdp'/'library'
-if bp_version.lower() == 'bpv6':
-    bp_lib = ion_path/'bpv6'/'library'
-elif bp_version.lower() == 'bpv7':
-    bp_lib = ion_path/'bpv7'/'library'
+ici_inc = ion_path / "ici" / "include"
+ltp_lib = ion_path / "ltp" / "library"
+cfdp_inc = ion_path / "cfdp" / "include"
+cfdp_lib = ion_path / "cfdp" / "library"
+if bp_version.lower() == "bpv6":
+    bp_lib = ion_path / "bpv6" / "library"
+elif bp_version.lower() == "bpv7":
+    bp_lib = ion_path / "bpv7" / "library"
 else:
     raise ValueError("Environment variable PYION_BP_VERSION must be BPv6 or BPv7")
+
+# Record the build-time ION and BP versions for the runtime import check
+# (pyion/__init__.py). Imported at runtime as pyion._build_info.
+_build_info = Path(__file__).parent / "pyion" / "_build_info.py"
+_build_info.write_text(
+    "# Generated by setup.py at build time. Do not edit.\nION_VERSION = '{}'\n".format(
+        ION_BUILD_VERSION
+    )
+    + "BP_VERSION = '{}'\n".format("BPv7" if bp_version.lower() == "bpv7" else "BPv6")
+)
 
 # ========================================================================================
 # === Figure out compile-time options
 # ========================================================================================
 
 # Figure out the type of machine this is being installed in
-hw_type = int(math.log2(sys.maxsize))+1
+hw_type = int(math.log2(sys.maxsize)) + 1
 if hw_type == 64:
     ds = 3
 elif hw_type == 31:
@@ -147,21 +185,21 @@ elif hw_type == 31:
 elif hw_type == 16:
     ds = 1
 else:
-    raise ValueError('Cannot determine host type (16 vs. 32 vs. 64 bits)')
+    raise ValueError("Cannot determine host type (16 vs. 32 vs. 64 bits)")
 
 # Defined C compilation options for the extensions.
 compile_args = [
-    '-g',
-    '-Wall',
-    '-O0',
-    '-Wl,--no-undefined',
-    '-Wno-undef',
-    '-DSPACE_ORDER={}'.format(ds), 
-    '-fPIC', 
-    '-Wno-unused-function', 
-    '-Wno-strict-prototypes',
-    '-Wno-discarded-qualifiers', 
-    '-Wno-unused-variable'
+    "-g",
+    "-Wall",
+    "-O0",
+    "-Wl,--no-undefined",
+    "-Wno-undef",
+    "-DSPACE_ORDER={}".format(ds),
+    "-fPIC",
+    "-Wno-unused-function",
+    "-Wno-strict-prototypes",
+    "-Wno-discarded-qualifiers",
+    "-Wno-unused-variable",
 ]
 
 # Starting in Python 3.10, variant formats of the Python C Interface require that
@@ -170,26 +208,23 @@ compile_args = [
 # See https://stackoverflow.com/questions/70705404/systemerror-py-ssize-t-clean-macro-must-be-defined-for-formats
 # See https://setuptools.pypa.io/en/latest/userguide/ext_modules.html
 # See https://docs.python.org/3.10/extending/extending.html#extracting-parameters-in-extension-functions
-c_macros = [
-    ('PY_SSIZE_T_CLEAN', None),
-    ('PYION_BP_VERSION', bp_version)
-]
+c_macros = [("PY_SSIZE_T_CLEAN", None), ("PYION_BP_VERSION", bp_version)]
 
 # Optional sanitizer build. Set PYION_SANITIZE to a sanitizer list (e.g.
 # "address,undefined") to compile and link the C extensions with that
 # sanitizer. Used by the C-layer concurrency regression test to validate
 # memory safety (use-after-free, buffer overflow, undefined behavior).
 link_args = []
-_sanitize = os.environ.get('PYION_SANITIZE')
+_sanitize = os.environ.get("PYION_SANITIZE")
 if _sanitize:
     _san_flags = [
-        '-fsanitize={}'.format(_sanitize),
-        '-fno-omit-frame-pointer',
-        '-fno-sanitize-recover=all',
-        '-g',
+        "-fsanitize={}".format(_sanitize),
+        "-fno-omit-frame-pointer",
+        "-fno-sanitize-recover=all",
+        "-g",
     ]
     compile_args += _san_flags
-    link_args    += _san_flags
+    link_args += _san_flags
 
 # ========================================================================================
 # === Define all pyion C Extensions
@@ -197,99 +232,95 @@ if _sanitize:
 
 # Define ION management extension
 _mgmt = Extension(
-    '_mgmt',
+    "_mgmt",
     include_dirs=[str(ion_inc), str(bp_lib), str(ltp_lib), str(cfdp_lib), str(ici_inc)],
-    libraries=['ici', 'bp', 'ltp', 'cfdp'],
+    libraries=["ici", "bp", "ltp", "cfdp"],
     library_dirs=[str(ion_lib)],
-    sources=['./pyion/_mgmt.c'],
+    sources=["./pyion/_mgmt.c"],
     extra_compile_args=compile_args,
     extra_link_args=link_args,
-    define_macros=c_macros
+    define_macros=c_macros,
 )
 
 # Define the ION-BP extension and related directories
 _bp = Extension(
-    '_bp',
+    "_bp",
     include_dirs=[str(ion_inc)],
-    libraries=['bp', 'ici', 'ltp', 'cfdp'],
+    libraries=["bp", "ici", "ltp", "cfdp"],
     library_dirs=[str(ion_lib), str(bp_lib)],
-    sources=[
-        './pyion/_bp.c',
-        './pyion/_utils.c', 
-        './pyion/base_bp.c'
-    ],
+    sources=["./pyion/_bp.c", "./pyion/_utils.c", "./pyion/base_bp.c"],
     extra_compile_args=compile_args,
     extra_link_args=link_args,
-    define_macros=c_macros
+    define_macros=c_macros,
 )
 
 # Define the ION-CFDP extension and related directories
 _cfdp = Extension(
-    '_cfdp',
-    include_dirs=[str(ion_inc), str(cfdp_inc), str(cfdp_lib)],    
-    libraries=['cfdp', 'ici'],
+    "_cfdp",
+    include_dirs=[str(ion_inc), str(cfdp_inc), str(cfdp_lib)],
+    libraries=["cfdp", "ici"],
     library_dirs=[str(ion_lib), str(cfdp_lib)],
-    sources=['./pyion/_cfdp.c', './pyion/base_cfdp.c'],
+    sources=["./pyion/_cfdp.c", "./pyion/base_cfdp.c"],
     extra_compile_args=compile_args,
     extra_link_args=link_args,
-    define_macros=c_macros
+    define_macros=c_macros,
 )
 
 # Define the ION-LTP extension and related directories
 _ltp = Extension(
-    '_ltp',
+    "_ltp",
     include_dirs=[str(ion_inc), str(ltp_lib)],
-    libraries=['ltp', 'ici', 'bp', 'cfdp'],
+    libraries=["ltp", "ici", "bp", "cfdp"],
     library_dirs=[str(ion_lib)],
-    sources=['./pyion/_ltp.c',
-    './pyion/_utils.c', './pyion/base_ltp.c'],
+    sources=["./pyion/_ltp.c", "./pyion/_utils.c", "./pyion/base_ltp.c"],
     extra_compile_args=compile_args,
     extra_link_args=link_args,
-    define_macros=c_macros
+    define_macros=c_macros,
 )
 
 # Define the ION memory extension and related directories
 _mem = Extension(
-    '_mem',
+    "_mem",
     include_dirs=[str(ion_inc)],
-    libraries=['ici', 'bp', 'cfdp', 'ltp'],        # bp is required
+    libraries=["ici", "bp", "cfdp", "ltp"],  # bp is required
     library_dirs=[str(ion_lib)],
-    sources=['./pyion/_mem.c', './pyion/base_mem.c'],
+    sources=["./pyion/_mem.c", "./pyion/base_mem.c"],
     extra_compile_args=compile_args,
     extra_link_args=link_args,
-    define_macros=c_macros
+    define_macros=c_macros,
 )
 
 # Define the extensions to compile
 _ext_modules = [_bp, _cfdp, _ltp, _mem]
-if ion_path: _ext_modules.append(_mgmt)
+if ion_path:
+    _ext_modules.append(_mgmt)
 
 # ========================================================================================
 # === Main setup
 # ========================================================================================
 
 setup(
-    name             = 'pyion',
-    version          = __version__,
-    release          = __release__,
-    description      = 'Interface between ION and Python',
-    long_description = README,
-    author           = 'Marc Sanchez Net',
-    author_email     = 'marc.sanchez.net@jpl.nasa.gov',
-    license          = 'Apache 2.0',
-    url              = 'https://github.com/msancheznet/pyion',
-    python_requires  = '>=3.5.0',
-    setup_requires   = [],
-    install_requires = ['setuptools'],
-    extras_require   = {
-                'test': [],
-                'docs': ['sphinx', 'sphinx_bootstrap_theme'],
-            },
-    entry_points     = {
-                'sphinx.html_themes': [
-                    'bootstrap = sphinx_bootstrap_theme',
-                ]
-            },
-    packages         = ["pyion"],
-    ext_modules      = _ext_modules
+    name="pyion",
+    version=__version__,
+    release=__release__,
+    description="Interface between ION and Python",
+    long_description=README,
+    author="Marc Sanchez Net",
+    author_email="marc.sanchez.net@jpl.nasa.gov",
+    license="Apache 2.0",
+    url="https://github.com/msancheznet/pyion",
+    python_requires=">=3.9",
+    setup_requires=[],
+    install_requires=["setuptools"],
+    extras_require={
+        "test": [],
+        "docs": ["sphinx", "sphinx_bootstrap_theme"],
+    },
+    entry_points={
+        "sphinx.html_themes": [
+            "bootstrap = sphinx_bootstrap_theme",
+        ]
+    },
+    packages=["pyion"],
+    ext_modules=_ext_modules,
 )

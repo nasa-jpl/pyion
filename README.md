@@ -29,6 +29,29 @@ ION's official repository is now available at https://github.com/nasa-jpl/ION-DT
 
 ION's official documentation is available at https://ion-dtn.readthedocs.io/en/latest/.
 
+Install from wheel
+------------------
+
+Prebuilt wheels are attached to each pyion release on the GitHub Releases page.
+They support ION **4.2.1-a.1** only, built with ION's default `./configure` options, and BPv7 only.
+
+Requirements:
+
+- ION 4.2.1-a.1 installed (default location `/usr/local`).
+- ION's library directory (for example `/usr/local/lib`) on the dynamic linker path. It is not on every
+  system's path. Either add it with `/etc/ld.so.conf.d/` plus `sudo ldconfig`, or set `LD_LIBRARY_PATH`.
+- Linux x86_64 with glibc 2.28 or newer, and CPython 3.9 to 3.13.
+
+Install (replace the wheel file name with the one you downloaded):
+
+    pip install pyion-4.2.1a1+ion4.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+
+Troubleshooting:
+
+- `pyion cannot load ION library 'libbp.so'`: the ION library directory is not on the linker path. See above.
+- `ION version mismatch`: the installed ION does not match the version the wheel was built for. Install ION 4.2.1-a.1, or use the pyion wheel that matches your ION.
+- A `RuntimeWarning` that `ion.pc` was not found means the version check was skipped. The import still works.
+
 Regression Testing
 ------------------
 
