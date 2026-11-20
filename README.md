@@ -60,12 +60,14 @@ Pyion includes a suite of regression tests to verify thread-safety and concurren
 **Python-level Concurrency Test** (``test_concurrency.py``):
 Verifies that the Python-level locks (global directory lock and endpoint-level serialization) correctly prevent race conditions.
 
-To run:
+To run (from a fresh checkout, generate the build-info file once first):
 ```bash
+python3 scripts/ionpin.py --write-build-info   # writes pyion/_build_info.py from ion-pin.env
 export PYTHONPATH=$PYTHONPATH:.
-export PYION_BP_VERSION=BPv7
 python3 tests/regression/concurrency/test_concurrency.py
 ```
+The helper reads `ion-pin.env` and records the pinned ION version and the `PYION_BP_VERSION`
+value (default `BPv7`); it is only needed once per checkout.
 
 License Terms
 -------------

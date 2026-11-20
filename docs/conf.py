@@ -23,8 +23,10 @@ import sphinx_bootstrap_theme
 # from the available docstrings.
 autodoc_mock_imports = ["_bp", "_ltp", "_cfdp", "_mem", "_mgmt"]
 
-# pyion.bp refuses to import without PYION_BP_VERSION, which would leave the
-# autodoc pages empty. Default it for the docs build only.
+# Default PYION_BP_VERSION in case any code path in the docs build reads it.
+# Note this does NOT make `import pyion` work: pyion imports the generated
+# pyion/_build_info.py, which only exists after a build (or after
+# `python3 scripts/ionpin.py --write-build-info`).
 os.environ.setdefault('PYION_BP_VERSION', 'BPv7')
 
 # -- Project information -----------------------------------------------------

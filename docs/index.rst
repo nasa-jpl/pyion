@@ -116,9 +116,8 @@ The ``docker/README.md`` file describes the other images in that directory (free
 
 
 
-Note that to install pyion, three environment variables are used:
+Note that to install pyion, two environment variables are used:
     - ``$ION_HOME``, which points to the base path where the ION source code is located (i.e., it contains the ION manual)
-    - ``$PYION_HOME``, which points to the base path where the pyion source code is located (i.e., it contains ``setup.py``)
     - ``$PYION_BP_VERSION``. It must be set to either ``BPv6`` or ``BPv7``, depending on which version of the BP was used when compiling ION.
 Additionally, the user can also specify the ``LD_LIBRARY_PATH`` environment variable to indicate the location of the ION shared libraries (.h and .so files).
 
