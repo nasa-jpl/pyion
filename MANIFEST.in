@@ -1,0 +1,4 @@
+include scripts/ionpin.py
+include ion-pin.env
+include pyion/*.h
+include pyion/*.c

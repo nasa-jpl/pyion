@@ -28,12 +28,8 @@ import _bp
 # Define all methods/vars exposed at pyion
 __all__ = ['Endpoint', 'is_bpv6', 'is_bpv7']
 
-# Get version of BP used in this deployment of pyion
-bp_version = os.environ.get('PYION_BP_VERSION')
-if not bp_version:
-    raise ValueError("Environment variable PYION_BP_VERSION is missing. Set it to BPv6 or BPv7")
-if bp_version.lower() not in ['bpv7', 'bpv6']:
-	raise ValueError("Environment variable PYION_BP_VERSION must be set to BPv6 or BPv7")
+# BP version this build of pyion was compiled for (written by setup.py)
+from pyion._build_info import BP_VERSION as bp_version
 is_bpv6 = bp_version.lower() == 'bpv6'
 is_bpv7 = bp_version.lower() == 'bpv7'
 
